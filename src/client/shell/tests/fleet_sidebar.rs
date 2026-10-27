@@ -150,6 +150,37 @@ fn agent_path_shows_only_when_it_leaves_the_space_root() {
 }
 
 #[test]
+fn agent_keys_follow_the_machine_grouped_panel_order() {
+    let mut state = fleet_state();
+    state.fleet.as_mut().unwrap().scope = crate::client::fleet::AgentScope::AllMachines;
+    state.config.agent_panel_sort = crate::config::AgentPanelSortConfig::Spaces;
+    let busy = agent("busy", AgentStatus::Working, 9);
+    let mut stuck = agent("stuck", AgentStatus::Blocked, 1);
+    stuck.pane_id = "pane_2".into();
+    stuck.focused = false;
+    set_local_agents(&mut state, vec![busy, stuck]);
+    sidebar_text(&mut state);
+
+    let panel = state
+        .hits
+        .endpoint_agents
+        .iter()
+        .map(|(_, endpoint, pane)| (endpoint.clone(), pane.clone()))
+        .collect::<Vec<_>>();
+    let keys = super::super::aggregate_navigation::online_agent_targets(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        state.config.agent_panel_sort,
+        state.fleet.as_ref(),
+    )
+    .into_iter()
+    .map(|target| (target.endpoint_id, target.pane_id))
+    .collect::<Vec<_>>();
+    assert_eq!(keys, panel);
+    assert_eq!(keys[0].1, "pane_2", "blocked agent comes first under khion");
+}
+
+#[test]
 fn agents_group_by_machine_with_blocked_first() {
     let mut state = fleet_state();
     state.fleet.as_mut().unwrap().scope = crate::client::fleet::AgentScope::AllMachines;

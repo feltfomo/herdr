@@ -276,13 +276,23 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
     }
 }
 
+/// Agent keybind targets in the order the sidebar shows them; combined windows group them by
+/// machine.
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     sort: crate::config::AgentPanelSortConfig,
+    fleet: Option<&crate::client::fleet::State>,
 ) -> Vec<AggregateAgentTarget> {
-    aggregate_agent_rows(endpoints, active_endpoint_id, sort)
-        .into_iter()
+    let rows = aggregate_agent_rows(endpoints, active_endpoint_id, sort);
+    let rows = match fleet {
+        Some(fleet) => super::fleet_agents::by_machine(rows, fleet)
+            .into_iter()
+            .flatten()
+            .collect(),
+        None => rows,
+    };
+    rows.into_iter()
         .filter(|row| !row.endpoint.stale())
         .map(|row| AggregateAgentTarget {
             endpoint_id: row.endpoint.endpoint_id.clone(),

@@ -33,24 +33,17 @@ impl Item<'_> {
     }
 }
 
-/// Agents visible under the fleet scope, grouped under their machine in fleet order and
-/// ordered by urgency within each machine. Ties keep the aggregate order, so the agent
-/// view and recency still break them.
-pub(super) fn items<'a>(
-    endpoints: &'a [ClientShellEndpoint],
-    active_endpoint_id: &ClientEndpointId,
+/// Agent rows grouped under their machine in fleet order and ordered by urgency within each
+/// machine. Ties keep the aggregate order, so the agent view and recency still break them.
+/// The panel and agent keybinds both take their order from here so the two can't disagree.
+pub(super) fn by_machine<'a>(
+    rows: Vec<super::aggregate_navigation::AggregateAgentRow<'a>>,
     fleet: &crate::client::fleet::State,
-    collapsed: &HashSet<String>,
-    config: &ClientShellConfig,
-) -> Vec<Item<'a>> {
+) -> Vec<Vec<super::aggregate_navigation::AggregateAgentRow<'a>>> {
     let mut grouped = (0..fleet.machines.len())
         .map(|_| Vec::new())
         .collect::<Vec<_>>();
-    for row in super::aggregate_navigation::aggregate_agent_rows(
-        endpoints,
-        active_endpoint_id,
-        config.agent_panel_sort,
-    ) {
+    for row in rows {
         let machine = fleet.machine_for(row.endpoint.endpoint_id).and_then(|id| {
             fleet
                 .machines
@@ -61,9 +54,31 @@ pub(super) fn items<'a>(
             grouped[machine].push(row);
         }
     }
+    for rows in &mut grouped {
+        rows.sort_by_key(|row| std::cmp::Reverse(status_priority(row.agent.agent_status)));
+    }
+    grouped
+}
+
+/// Agents visible under the fleet scope, laid out as machine headers and their agents.
+pub(super) fn items<'a>(
+    endpoints: &'a [ClientShellEndpoint],
+    active_endpoint_id: &ClientEndpointId,
+    fleet: &crate::client::fleet::State,
+    collapsed: &HashSet<String>,
+    config: &ClientShellConfig,
+) -> Vec<Item<'a>> {
+    let grouped = by_machine(
+        super::aggregate_navigation::aggregate_agent_rows(
+            endpoints,
+            active_endpoint_id,
+            config.agent_panel_sort,
+        ),
+        fleet,
+    );
     let detailed = config.agent_detail == crate::config::AgentDetailConfig::Detailed;
     let mut items = Vec::new();
-    for (machine, mut rows) in grouped.into_iter().enumerate() {
+    for (machine, rows) in grouped.into_iter().enumerate() {
         if rows.is_empty() {
             continue;
         }
@@ -75,7 +90,6 @@ pub(super) fn items<'a>(
         if machine_collapsed {
             continue;
         }
-        rows.sort_by_key(|row| std::cmp::Reverse(status_priority(row.agent.agent_status)));
         let count = rows.len();
         for (index, row) in rows.into_iter().enumerate() {
             let snapshot = row.endpoint.snapshot;

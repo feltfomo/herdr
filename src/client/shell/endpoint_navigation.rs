@@ -197,6 +197,7 @@ impl ClientShellState {
                 &self.endpoints,
                 &self.active_endpoint_id,
                 self.config.agent_panel_sort,
+                self.fleet.as_ref(),
             );
             if agents.is_empty() {
                 return true;
