@@ -74,6 +74,7 @@ impl fmt::Display for ProfileId {
 pub(crate) enum ClientEndpointId {
     Local,
     Ssh(ProfileId),
+    Session(ProfileId),
 }
 
 impl ClientEndpointId {
@@ -85,6 +86,7 @@ impl ClientEndpointId {
         match self {
             Self::Local => "local".into(),
             Self::Ssh(profile_id) => format!("ssh:{profile_id}"),
+            Self::Session(profile_id) => format!("session:{profile_id}"),
         }
     }
 }

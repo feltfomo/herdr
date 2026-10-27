@@ -60,6 +60,31 @@ pub(super) fn load(path: &Path) -> Option<ClientChromePreferences> {
     serde_json::from_str(&content).ok()
 }
 
+pub(super) fn load_guarded(path: &Path) -> Result<Option<ClientChromePreferences>, String> {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut bytes = Vec::new();
+    file.take(256 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > 256 * 1024 {
+        return Err("chrome preferences exceed size limit".into());
+    }
+    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+    let mut unknown = false;
+    let preferences = serde_ignored::deserialize(&mut deserializer, |_| unknown = true)
+        .map_err(|error| error.to_string())?;
+    deserializer.end().map_err(|error| error.to_string())?;
+    if unknown {
+        return Err("unknown chrome preference fields".into());
+    }
+    Ok(Some(preferences))
+}
+
 pub(super) fn store(path: &Path, preferences: ClientChromePreferences) -> Result<(), String> {
     let parent = path
         .parent()

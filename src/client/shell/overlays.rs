@@ -61,7 +61,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::ReleaseNotes(v) => {
             render_release_notes_overlay(b, v, &s.update_install_command, p)
         }
-        ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, p),
+        ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, endpoints, p),
         ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
         ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
         ClientShellOverlay::Navigator(v) => {
@@ -644,6 +644,7 @@ fn render_onboarding_overlay(
 fn render_rename_overlay(
     b: &mut Buffer,
     v: &ClientRenameOverlay,
+    endpoints: &[ClientShellEndpoint],
     p: &Palette,
 ) -> Option<OverlayRender> {
     let q = popup(b.area, 56, 7)?;
@@ -659,6 +660,22 @@ fn render_rename_overlay(
             .bg(p.panel_bg)
             .add_modifier(Modifier::BOLD),
     );
+    if let ClientRenameTarget::NewWorkspace { endpoint_id, .. } = &v.target {
+        if let Some(label) = endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.fleet_label.as_deref())
+        {
+            put_text(
+                b,
+                i.x,
+                i.y + 1,
+                i.width,
+                &format!("on {label}"),
+                Style::default().fg(p.overlay0).bg(p.panel_bg),
+            );
+        }
+    }
     let input = Rect::new(i.x, i.y + 2, i.width, 1);
     b.set_style(input, Style::default().fg(p.text).bg(p.surface0));
     let cursor = text_editor::render(

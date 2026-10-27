@@ -9,6 +9,8 @@ use crate::client::endpoint::{EndpointCatalog, ProfileId, MAX_LABEL_BYTES};
 
 const HELP: &str = "Usage:
   herdr machine list [--json]
+  herdr machine state-dir
+  herdr machine fleet-create <ssh-target> <session>
   herdr machine status [<label-or-id>] [--json]
   herdr machine reconnect <label-or-id>
   herdr machine add <ssh-target> [--label <label>] [--remote-session <name>]
@@ -37,6 +39,9 @@ struct MachineListRow<'a> {
 pub(super) fn run_machine_command(args: &[String]) -> std::io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("list") => list(&args[1..]),
+        Some("fleet-version") => fleet_version(&args[1..], &mut std::io::stdout().lock()),
+        Some("fleet-create") => fleet_create(&args[1..]),
+        Some("state-dir") => state_dir(&args[1..], &mut std::io::stdout().lock()),
         Some("status") => status(&args[1..]),
         Some("reconnect") => reconnect(&args[1..]),
         Some("add") => add(&args[1..]),
@@ -53,6 +58,51 @@ pub(super) fn run_machine_command(args: &[String]) -> std::io::Result<i32> {
             Ok(2)
         }
     }
+}
+
+fn fleet_version(args: &[String], output: &mut impl std::io::Write) -> std::io::Result<i32> {
+    if !args.is_empty() {
+        return Ok(2);
+    }
+    writeln!(output, "2")?;
+    Ok(0)
+}
+
+fn parse_fleet_create_args(args: &[String]) -> Result<(&str, &str), String> {
+    let [target, session] = args else {
+        return Err("usage: herdr machine fleet-create <ssh-target> <session>".into());
+    };
+    crate::client::endpoint::SavedSshEndpoint::new("peer", target.as_str(), session.as_str())?;
+    if session == crate::session::DEFAULT_SESSION_NAME {
+        return Err("fleet-create requires a new named session; default is reserved".into());
+    }
+    Ok((target, session))
+}
+
+fn fleet_create(args: &[String]) -> std::io::Result<i32> {
+    let (target, session) = match parse_fleet_create_args(args) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("{error}");
+            return Ok(2);
+        }
+    };
+    if let Err(error) = crate::remote::SavedSshSetup::create_session(target, session) {
+        eprintln!("error: {error}");
+        crate::remote::print_saved_ssh_error_hint(&error, target);
+        return Ok(1);
+    }
+    println!("Session {session} is ready on {target}.");
+    Ok(0)
+}
+
+fn state_dir(args: &[String], output: &mut impl std::io::Write) -> std::io::Result<i32> {
+    if !args.is_empty() {
+        eprintln!("usage: herdr machine state-dir");
+        return Ok(2);
+    }
+    writeln!(output, "{}", crate::config::client_state_dir().display())?;
+    Ok(0)
 }
 
 fn list(args: &[String]) -> std::io::Result<i32> {
@@ -582,6 +632,83 @@ fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fleet_version_reports_the_session_scoped_schema() {
+        let mut output = Vec::new();
+        assert_eq!(fleet_version(&[], &mut output).unwrap(), 0);
+        assert_eq!(output, b"2\n");
+        output.clear();
+        assert_eq!(fleet_version(&["extra".into()], &mut output).unwrap(), 2);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn fleet_create_requires_an_explicit_new_named_session() {
+        for args in [
+            vec![],
+            vec!["peer"],
+            vec!["peer", "work", "extra"],
+            vec!["peer", "default"],
+            vec!["peer", "."],
+            vec!["peer", ".."],
+            vec!["-oProxyCommand=bad", "work"],
+            vec!["peer\ninvalid", "work"],
+            vec!["ssh://user:password@peer", "work"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(parse_fleet_create_args(&args).is_err(), "{args:?}");
+        }
+        let args = vec!["feltfomo@khion".to_owned(), "new-work".to_owned()];
+        assert_eq!(
+            parse_fleet_create_args(&args).unwrap(),
+            ("feltfomo@khion", "new-work")
+        );
+    }
+
+    #[test]
+    fn state_dir_probe_reports_scope_without_creating_state() {
+        use crate::config::CLIENT_STATE_DIR_ENV_VAR;
+
+        let _lock = crate::config::test_config_env_lock().lock().unwrap();
+        struct RestoreEnv(Option<std::ffi::OsString>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(value) => std::env::set_var(CLIENT_STATE_DIR_ENV_VAR, value),
+                    None => std::env::remove_var(CLIENT_STATE_DIR_ENV_VAR),
+                }
+            }
+        }
+        let _restore = RestoreEnv(std::env::var_os(CLIENT_STATE_DIR_ENV_VAR));
+        std::env::remove_var(CLIENT_STATE_DIR_ENV_VAR);
+        let mut output = Vec::new();
+        assert_eq!(state_dir(&[], &mut output).unwrap(), 0);
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            format!("{}\n", crate::config::state_dir().join("client").display())
+        );
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let scoped = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".runtime/client-state-probe")
+            .join(format!("{}-{unique}", std::process::id()));
+        std::env::set_var(CLIENT_STATE_DIR_ENV_VAR, &scoped);
+        let mut output = Vec::new();
+        assert_eq!(state_dir(&[], &mut output).unwrap(), 0);
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            format!("{}\n", scoped.display())
+        );
+        assert!(!scoped.exists());
+        let mut output = Vec::new();
+        assert_eq!(state_dir(&["unexpected".into()], &mut output).unwrap(), 2);
+        assert!(output.is_empty());
+        assert!(!scoped.exists());
+    }
 
     #[test]
     fn add_parser_preserves_values_across_argument_orders() {

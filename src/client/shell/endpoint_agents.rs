@@ -70,8 +70,23 @@ pub(super) fn render_expanded(
         config,
         agent_scroll,
         hits,
-        |row| row.agent.rows.len(),
+        |row| row.agent.rows.len() + usize::from(row.group_header.is_some()),
         |buffer, rect, row, hits| {
+            let mut rect = rect;
+            if let Some(header) = &row.group_header {
+                put_text(
+                    buffer,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    &format!(" {header}"),
+                    Style::default()
+                        .fg(config.palette.overlay0)
+                        .add_modifier(Modifier::BOLD),
+                );
+                rect.y = rect.y.saturating_add(1);
+                rect.height = rect.height.saturating_sub(1);
+            }
             super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
             if row.stale {
                 buffer.set_style(
@@ -106,7 +121,11 @@ impl ClientShellState {
         };
         let heights = rows
             .iter()
-            .map(|row| row.agent.rows.len().max(1).min(u16::MAX as usize) as u16)
+            .map(|row| {
+                (row.agent.rows.len() + usize::from(row.group_header.is_some()))
+                    .max(1)
+                    .min(u16::MAX as usize) as u16
+            })
             .collect::<Vec<_>>();
         let mut gaps = vec![self.config.agents.row_gap; rows.len()];
         if let Some(last) = gaps.last_mut() {
@@ -127,6 +146,7 @@ struct EndpointAgentRow {
     machine_label: String,
     stale: bool,
     agent: super::agent_sidebar::AgentRow,
+    group_header: Option<String>,
 }
 
 fn agent_rows(
@@ -141,6 +161,7 @@ fn agent_rows(
                 snapshot
                     .agents
                     .iter()
+                    .filter(|agent| endpoint.agent_visible(agent))
                     .filter_map(|agent| {
                         super::agent_sidebar::agent_row(
                             snapshot,
@@ -156,7 +177,7 @@ fn agent_rows(
         .flatten()
         .collect::<HashMap<_, _>>();
 
-    super::aggregate_navigation::aggregate_agent_rows(
+    let mut rows = super::aggregate_navigation::aggregate_agent_rows(
         endpoints,
         active_endpoint_id,
         config.agent_panel_sort,
@@ -171,7 +192,24 @@ fn agent_rows(
             machine_label: row.endpoint.label.to_owned(),
             stale: row.endpoint.stale(),
             agent,
+            group_header: None,
         })
     })
-    .collect()
+    .collect::<Vec<_>>();
+    if endpoints
+        .iter()
+        .any(|endpoint| endpoint.agent_group.is_some())
+    {
+        let mut previous = None;
+        for row in &mut rows {
+            if previous.as_ref() != Some(&row.endpoint_id) {
+                row.group_header = endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.endpoint_id == row.endpoint_id)
+                    .and_then(|endpoint| endpoint.agent_group.clone());
+                previous = Some(row.endpoint_id.clone());
+            }
+        }
+    }
+    rows
 }

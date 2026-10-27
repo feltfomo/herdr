@@ -12,6 +12,7 @@ pub(crate) struct ClientEndpointAgentViewProjection {
 pub(crate) struct ClientShellEndpoint {
     pub(crate) endpoint_id: ClientEndpointId,
     pub(crate) label: String,
+    pub(super) fleet_label: Option<String>,
     pub(crate) status: ClientEndpointStatus,
     pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
     /// Connection generation that produced `snapshot`. `None` is reserved for local tests.
@@ -22,6 +23,8 @@ pub(crate) struct ClientShellEndpoint {
     pending_agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pub(crate) agent_view_projection_supported: bool,
     pub(crate) methods: Option<HashSet<String>>,
+    pub(super) agent_visibility: AgentVisibility,
+    pub(super) agent_group: Option<String>,
 }
 
 pub(super) struct MachineHit {
@@ -43,7 +46,122 @@ pub(crate) enum ClientEndpointFocusTarget {
     },
 }
 
+#[derive(Clone, Debug, Default)]
+pub(super) enum AgentVisibility {
+    #[default]
+    All,
+    None,
+    Workspace(String),
+}
+
+impl ClientShellEndpoint {
+    pub(super) fn agent_visible(&self, agent: &crate::protocol::ClientShellAgent) -> bool {
+        match &self.agent_visibility {
+            AgentVisibility::All => true,
+            AgentVisibility::None => false,
+            AgentVisibility::Workspace(workspace) => workspace == &agent.workspace_id,
+        }
+    }
+}
+
 impl ClientShellState {
+    pub(in crate::client) fn set_fleet(&mut self, fleet: crate::client::fleet::State) {
+        self.fleet = Some(fleet);
+        self.refresh_fleet_endpoints();
+    }
+
+    pub(in crate::client) fn refresh_fleet_endpoints(&mut self) {
+        let Some(fleet) = &self.fleet else {
+            return;
+        };
+        let mut previous = std::mem::take(&mut self.endpoints)
+            .into_iter()
+            .map(|endpoint| (endpoint.endpoint_id.clone(), endpoint))
+            .collect::<HashMap<_, _>>();
+        for machine in &fleet.config.machines {
+            let mut sessions = fleet
+                .sessions
+                .values()
+                .filter(|session| session.machine == machine.id)
+                .collect::<Vec<_>>();
+            sessions.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+            for session in sessions {
+                let mut endpoint = previous.remove(&session.endpoint).unwrap_or_else(|| {
+                    let mut endpoint = local_endpoint();
+                    endpoint.endpoint_id = session.endpoint.clone();
+                    endpoint.status = if session.running {
+                        ClientEndpointStatus::Connecting
+                    } else {
+                        ClientEndpointStatus::Disabled
+                    };
+                    endpoint
+                });
+                endpoint.label = session.name.clone();
+                endpoint.fleet_label = Some(fleet.label(&session.endpoint));
+                if !session.running && !session.endpoint.is_local() {
+                    endpoint.status = ClientEndpointStatus::Disabled;
+                }
+                self.endpoints.push(endpoint);
+            }
+        }
+        self.collapsed_endpoints
+            .retain(|endpoint| fleet.sessions.contains_key(endpoint));
+        self.remote_collapsed_groups
+            .retain(|endpoint, _| fleet.sessions.contains_key(endpoint));
+        self.fleet_agent_projection = None;
+        self.refresh_fleet_agent_visibility();
+    }
+
+    pub(super) fn refresh_fleet_agent_visibility(&mut self) {
+        let Some(fleet) = &self.fleet else {
+            return;
+        };
+        let workspace = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.focused_workspace_id.as_deref());
+        if self.fleet_agent_projection.as_ref().is_some_and(
+            |(scope, endpoint, previous_workspace)| {
+                *scope == fleet.scope
+                    && endpoint == &self.active_endpoint_id
+                    && previous_workspace.as_deref() == workspace
+            },
+        ) {
+            return;
+        }
+        self.fleet_agent_projection = Some((
+            fleet.scope,
+            self.active_endpoint_id.clone(),
+            workspace.map(str::to_owned),
+        ));
+        let active_machine = fleet.machine_for(&self.active_endpoint_id);
+        for endpoint in &mut self.endpoints {
+            endpoint.agent_group = match fleet.scope {
+                crate::client::fleet::AgentScope::AllMachines => {
+                    Some(fleet.label(&endpoint.endpoint_id))
+                }
+                crate::client::fleet::AgentScope::ThisMachine => Some(endpoint.label.clone()),
+                _ => None,
+            };
+            endpoint.agent_visibility = match fleet.scope {
+                crate::client::fleet::AgentScope::AllMachines => AgentVisibility::All,
+                crate::client::fleet::AgentScope::ThisMachine
+                    if fleet.machine_for(&endpoint.endpoint_id) == active_machine =>
+                {
+                    AgentVisibility::All
+                }
+                crate::client::fleet::AgentScope::ThisSpace
+                    if endpoint.endpoint_id == self.active_endpoint_id =>
+                {
+                    workspace.map_or(AgentVisibility::None, |workspace| {
+                        AgentVisibility::Workspace(workspace.to_owned())
+                    })
+                }
+                _ => AgentVisibility::None,
+            };
+        }
+    }
+
     pub(crate) fn set_endpoint_catalog(&mut self, profiles: &[SavedSshEndpoint]) {
         let mut next = Vec::with_capacity(profiles.len().saturating_add(1));
         let local = self
@@ -65,6 +183,7 @@ impl ClientShellState {
             next.push(ClientShellEndpoint {
                 endpoint_id,
                 label: profile.label.clone(),
+                fleet_label: None,
                 status: previous.map_or(
                     if profile.enabled {
                         ClientEndpointStatus::Connecting
@@ -88,6 +207,8 @@ impl ClientShellState {
                 agent_view_projection_supported: previous
                     .is_some_and(|endpoint| endpoint.agent_view_projection_supported),
                 methods: previous.and_then(|endpoint| endpoint.methods.clone()),
+                agent_visibility: AgentVisibility::All,
+                agent_group: None,
             });
         }
 
@@ -475,7 +596,7 @@ impl ClientShellState {
     }
 
     pub(crate) fn multi_endpoint_active(&self) -> bool {
-        self.endpoints.len() > 1
+        self.fleet.is_some() || self.endpoints.len() > 1
     }
 
     #[cfg(test)]
@@ -733,6 +854,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
     ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
         label: "Local".into(),
+        fleet_label: None,
         status: ClientEndpointStatus::Online,
         snapshot: None,
         snapshot_generation: None,
@@ -742,5 +864,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         pending_agent_view_projection: None,
         agent_view_projection_supported: false,
         methods: None,
+        agent_visibility: AgentVisibility::All,
+        agent_group: None,
     }
 }

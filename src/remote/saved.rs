@@ -7,6 +7,12 @@ pub(crate) struct SavedSshBridge {
     _bridge: SshStdioBridge,
 }
 
+impl SavedSshBridge {
+    pub(crate) fn reported_failure(&self) -> Option<io::Error> {
+        self._bridge.reported_failure()
+    }
+}
+
 pub(crate) struct SavedSshStream {
     pub(crate) stream: crate::ipc::LocalStream,
     pub(crate) bridge: SavedSshBridge,
@@ -16,18 +22,20 @@ pub(crate) fn connect_saved_ssh(
     profile_id: &str,
     target: &str,
     session: &str,
+    policy: super::RemoteAttachPolicy,
 ) -> io::Result<SavedSshStream> {
     let ssh = validated_saved_ssh(profile_id, target, session)?;
     let remote_herdr = find_installed_remote_herdr(&ssh)?;
     let metadata = remote_herdr.machine_metadata();
     let path = saved_bridge_path(profile_id);
-    let bridge = SshStdioBridge::start(
+    let bridge = SshStdioBridge::start_with_policy(
         target.to_owned(),
         remote_herdr,
         path.clone(),
         session.to_owned(),
         ssh.options(),
         true,
+        policy,
     )?;
     let stream = crate::ipc::connect_local_stream(&path)?;
     if let Some(metadata) = metadata {

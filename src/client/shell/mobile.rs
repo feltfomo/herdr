@@ -593,7 +593,10 @@ fn mobile_items(
                         Span::styled("  ", Style::default().bg(background)),
                         Span::styled(symbol, Style::default().fg(color).bg(background)),
                         Span::styled(
-                            format!(" {}", endpoint.label),
+                            format!(
+                                " {}",
+                                endpoint.fleet_label.as_ref().unwrap_or(&endpoint.label)
+                            ),
                             Style::default()
                                 .fg(palette.text)
                                 .bg(background)
@@ -1007,7 +1010,7 @@ impl ClientShellState {
                 if endpoint_id == self.active_endpoint_id {
                     self.mode = ClientShellMode::Terminal;
                     self.navigate_workspace_id = None;
-                    if endpoint_id.is_local() {
+                    if self.fleet.is_some() || endpoint_id.is_local() {
                         self.activate_endpoint(endpoint_id, outcome);
                     }
                 } else if self.activate_endpoint(endpoint_id, outcome) {

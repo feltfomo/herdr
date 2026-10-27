@@ -10,6 +10,14 @@ pub(super) fn command() -> Command {
                 .about("List saved SSH machines")
                 .arg(json_flag()),
         )
+        .subcommand(Command::new("fleet-version").about("Print the combined-window client schema version"))
+        .subcommand(
+            Command::new("fleet-create")
+                .about("Create a new peer session without saving an SSH machine")
+                .arg(Arg::new("ssh-target").value_name("SSH_TARGET").required(true))
+                .arg(Arg::new("session").value_name("SESSION").required(true)),
+        )
+        .subcommand(Command::new("state-dir").about("Print the client machine state directory"))
         .subcommand(
             Command::new("status")
                 .about("Check saved machines without prompting for authentication")

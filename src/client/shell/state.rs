@@ -84,6 +84,9 @@ pub(super) enum ClientMobileTarget {
 #[derive(Default)]
 pub(super) struct ShellHitMap {
     pub(super) machines: Vec<MachineHit>,
+    pub(super) fleet_machines: Vec<super::fleet_tree::FleetMachineHit>,
+    pub(super) fleet_scope: Rect,
+    pub(super) fleet_workspace_regions: Vec<super::fleet_tree::WorkspaceRegion>,
     pub(super) workspaces: Vec<WorkspaceHit>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
@@ -296,6 +299,8 @@ pub(super) enum ClientShellOverlayKind {
 #[derive(Debug)]
 pub(super) enum ClientRenameTarget {
     NewWorkspace {
+        endpoint_id: ClientEndpointId,
+        boot_id: Option<String>,
         source_workspace_id: Option<String>,
         cwd: Option<String>,
         suggested_name: String,
@@ -896,6 +901,12 @@ pub(crate) struct ClientShellState {
     pub(super) last_composed_at: Option<std::time::Instant>,
     pub(super) selection_repaint_deadline: Option<std::time::Instant>,
     pub(super) hits: ShellHitMap,
+    pub(in crate::client) fleet: Option<crate::client::fleet::State>,
+    pub(super) fleet_agent_projection: Option<(
+        crate::client::fleet::AgentScope,
+        ClientEndpointId,
+        Option<String>,
+    )>,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
     pub(super) active_endpoint_id: ClientEndpointId,
     pub(super) collapsed_endpoints: HashSet<ClientEndpointId>,
@@ -1021,11 +1032,20 @@ impl ClientShellState {
         }
         let mut remote_collapsed_groups = HashMap::<ClientEndpointId, HashSet<String>>::new();
         for saved in preferences.remote_collapsed_groups {
-            let Ok(profile_id) = crate::client::endpoint::ProfileId::parse(saved.profile_id) else {
+            let (session, id) = saved
+                .profile_id
+                .strip_prefix("session:")
+                .map_or((false, saved.profile_id.as_str()), |id| (true, id));
+            let Ok(profile_id) = crate::client::endpoint::ProfileId::parse(id) else {
                 continue;
             };
+            let endpoint = if session {
+                ClientEndpointId::Session(profile_id)
+            } else {
+                ClientEndpointId::Ssh(profile_id)
+            };
             remote_collapsed_groups
-                .entry(ClientEndpointId::Ssh(profile_id))
+                .entry(endpoint)
                 .or_default()
                 .extend(saved.collapsed_groups);
         }
@@ -1070,6 +1090,8 @@ impl ClientShellState {
             last_composed_at: None,
             selection_repaint_deadline: None,
             hits: ShellHitMap::default(),
+            fleet: None,
+            fleet_agent_projection: None,
             endpoints: vec![local_endpoint()],
             active_endpoint_id: ClientEndpointId::Local,
             collapsed_endpoints: HashSet::new(),

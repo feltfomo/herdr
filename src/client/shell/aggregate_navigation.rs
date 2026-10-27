@@ -87,6 +87,7 @@ pub(super) fn aggregate_agent_rows<'a>(
                     .snapshot
                     .agents
                     .iter()
+                    .filter(move |agent| endpoints[endpoint.endpoint_index].agent_visible(agent))
                     .map(move |agent| AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
@@ -123,10 +124,12 @@ pub(super) fn aggregate_agent_rows<'a>(
                         &view.sort,
                     )
                 });
+                group_fleet_rows(&mut rows, endpoints);
                 return rows;
             }
         }
         sort_aggregate_rows(&mut rows, sort);
+        group_fleet_rows(&mut rows, endpoints);
         return rows;
     }
 
@@ -140,6 +143,9 @@ pub(super) fn aggregate_agent_rows<'a>(
                         .agents
                         .iter()
                         .find(|agent| agent.pane_id == pane_id)?;
+                    if !endpoints[endpoint.endpoint_index].agent_visible(agent) {
+                        return None;
+                    }
                     Some(AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
@@ -153,7 +159,17 @@ pub(super) fn aggregate_agent_rows<'a>(
         })
         .collect::<Vec<_>>();
     sort_aggregate_rows(&mut rows, sort);
+    group_fleet_rows(&mut rows, endpoints);
     rows
+}
+
+fn group_fleet_rows(rows: &mut [AggregateAgentRow<'_>], endpoints: &[ClientShellEndpoint]) {
+    if endpoints
+        .iter()
+        .any(|endpoint| endpoint.agent_group.is_some())
+    {
+        rows.sort_by_key(|row| row.endpoint.endpoint_index);
+    }
 }
 
 fn sort_aggregate_rows(
@@ -309,6 +325,7 @@ pub(super) fn navigator_rows(
             let agents = snapshot
                 .agents
                 .iter()
+                .filter(|agent| endpoint.agent_visible(agent))
                 .map(|agent| (agent.pane_id.as_str(), agent))
                 .collect::<HashMap<_, _>>();
             // Build endpoint-local indexes once. Walk each bucket in snapshot

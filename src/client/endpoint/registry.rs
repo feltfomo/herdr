@@ -24,6 +24,7 @@ pub(crate) trait EndpointTransport: Send {
 pub(crate) struct EndpointNegotiation {
     methods: HashSet<String>,
     capabilities: HashSet<String>,
+    shared_filesystem: bool,
 }
 
 impl EndpointNegotiation {
@@ -31,7 +32,17 @@ impl EndpointNegotiation {
         Self {
             methods: methods.into_iter().collect(),
             capabilities: capabilities.into_iter().collect(),
+            shared_filesystem: false,
         }
+    }
+
+    pub(crate) fn with_shared_filesystem(mut self, shared_filesystem: bool) -> Self {
+        self.shared_filesystem = shared_filesystem;
+        self
+    }
+
+    pub(crate) fn shares_filesystem(&self) -> bool {
+        self.shared_filesystem
     }
 
     pub(crate) fn methods(&self) -> Vec<String> {

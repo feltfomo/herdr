@@ -2839,3 +2839,636 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
         }] if activated == &endpoint_id && workspace_id == "ws_1"
     ));
 }
+
+fn fleet_state() -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut fleet = crate::client::fleet::State::isolated(crate::client::fleet::tests::config());
+    for machine in ["khion", "lumi"] {
+        fleet.apply(crate::client::fleet::Discovery {
+            machine: machine.into(),
+            epoch: 1,
+            result: Ok(["skadi", "default", "odyssey"]
+                .into_iter()
+                .map(|name| crate::client::fleet::DiscoveredSession {
+                    name: name.into(),
+                    running: true,
+                })
+                .collect()),
+        });
+    }
+    state.set_fleet(fleet);
+    for id in state
+        .endpoints
+        .iter()
+        .map(|e| e.endpoint_id.clone())
+        .collect::<Vec<_>>()
+    {
+        let mut snap = snapshot();
+        snap.agents = vec![agent("same pane", AgentStatus::Working, 1)];
+        state.set_endpoint_snapshot(&id, Box::new(snap));
+        state.set_endpoint_status(&id, ClientEndpointStatus::Online);
+    }
+    state
+}
+
+#[test]
+fn fleet_scope_uses_displayed_workspace_and_qualified_session_identity() {
+    let mut state = fleet_state();
+    state.refresh_fleet_agent_visibility();
+    let rows = aggregate_navigation::aggregate_agent_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        state.config.agent_panel_sort,
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].endpoint.endpoint_id, &ClientEndpointId::Local);
+    state.fleet.as_mut().unwrap().scope = crate::client::fleet::AgentScope::ThisMachine;
+    state.refresh_fleet_agent_visibility();
+    assert_eq!(
+        aggregate_navigation::aggregate_agent_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            state.config.agent_panel_sort
+        )
+        .len(),
+        1
+    );
+    state.fleet.as_mut().unwrap().scope = crate::client::fleet::AgentScope::AllMachines;
+    state.refresh_fleet_agent_visibility();
+    assert_eq!(
+        aggregate_navigation::aggregate_agent_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            state.config.agent_panel_sort
+        )
+        .len(),
+        2
+    );
+    state.fleet.as_mut().unwrap().scope = crate::client::fleet::AgentScope::ThisSpace;
+    state.snapshot.as_mut().unwrap().focused_workspace_id = Some("other_workspace".into());
+    state.refresh_fleet_agent_visibility();
+    assert!(aggregate_navigation::aggregate_agent_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        state.config.agent_panel_sort
+    )
+    .is_empty());
+}
+
+#[test]
+fn fleet_sidebar_has_one_folder_per_machine_without_session_rows() {
+    let mut state = fleet_state();
+    state.set_pane_surface(surface());
+    state.compose(146, 100).unwrap();
+    assert_eq!(state.hits.fleet_machines.len(), 2);
+    assert!(state.hits.machines.is_empty());
+    assert_eq!(state.hits.workspaces.len(), 2);
+    state
+        .fleet
+        .as_mut()
+        .unwrap()
+        .collapsed
+        .insert("khion".into());
+    state.compose(146, 100).unwrap();
+    assert_eq!(state.hits.fleet_machines.len(), 2);
+    assert!(state.hits.machines.is_empty());
+    assert_eq!(state.hits.workspaces.len(), 1);
+}
+
+#[test]
+#[ignore = "manual render scale profile"]
+fn fleet_render_scale_profile() {
+    for panes in [1, 15] {
+        let mut state = fleet_state();
+        state.fleet.as_mut().unwrap().scope = crate::client::fleet::AgentScope::AllMachines;
+        for endpoint in &mut state.endpoints {
+            let snapshot = endpoint.snapshot.as_mut().unwrap();
+            let template = snapshot.agents[0].clone();
+            snapshot.agents = (0..panes)
+                .map(|index| {
+                    let mut agent = template.clone();
+                    agent.pane_id = format!("pane_{index}");
+                    agent
+                })
+                .collect();
+        }
+        let mut next = surface();
+        next.surface_revision += 1;
+        next.frame =
+            FrameData::from_ratatui_buffer(&Buffer::with_lines(vec!["x".repeat(144); 44]), None);
+        let template = next.panes[0].clone();
+        next.panes.clear();
+        for index in 0..panes {
+            let mut pane = template.clone();
+            pane.pane_id = format!("pane_{index}");
+            pane.inner_rect = SurfaceRect {
+                x: index as u16 * 8,
+                y: 0,
+                width: if panes == 1 { 120 } else { 8 },
+                height: 44,
+            };
+            pane.rect = pane.inner_rect;
+            next.panes.push(pane);
+        }
+        state.set_pane_surface(next);
+        for _ in 0..20 {
+            std::hint::black_box(state.compose(180, 48).unwrap());
+        }
+        let mut samples = Vec::new();
+        for _ in 0..200 {
+            let started = std::time::Instant::now();
+            std::hint::black_box(state.compose(180, 48).unwrap());
+            samples.push(started.elapsed().as_micros());
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "fleet machines=2 sessions=2 panes={panes} median_us={} p95_us={}",
+            samples[100], samples[190]
+        );
+    }
+}
+
+#[test]
+fn fleet_chrome_preferences_load_from_the_scoped_path() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".runtime/fleet-preferences-test");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("chrome.json");
+    super::super::preferences::store(
+        &path,
+        super::super::preferences::ClientChromePreferences {
+            sidebar_width: Some(31),
+            sidebar_collapsed: Some(true),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let state = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_fleet_preferences_path(path),
+    );
+    assert_eq!(state.sidebar_width, 31);
+    assert!(state.sidebar_collapsed);
+}
+
+#[test]
+fn fleet_same_endpoint_focus_goes_through_selection_bookkeeping() {
+    let mut state = fleet_state();
+    let endpoint = state
+        .fleet
+        .as_ref()
+        .unwrap()
+        .config
+        .endpoint_id("lumi", "skadi");
+    state.active_endpoint_id = endpoint.clone();
+    let mut outcome = ClientShellInput::default();
+    state.focus_or_activate(
+        endpoint.clone(),
+        ClientEndpointFocusTarget::Workspace("ws_1".into()),
+        &mut outcome,
+    );
+    assert!(
+        matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint { endpoint_id, .. }] if endpoint_id == &endpoint)
+    );
+}
+
+#[test]
+fn fleet_chrome_preserves_unknown_or_malformed_files() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".runtime/fleet-malformed-chrome");
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("chrome.json");
+    for bytes in [b"broken".as_slice(), br#"{"future_field":true}"#] {
+        std::fs::write(&path, bytes).unwrap();
+        let config = ClientShellConfig::from_config(&Config::default())
+            .with_fleet_preferences_path(path.clone());
+        assert!(config.preferences_path.is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn fleet_current_session_selection_cancels_other_desired_endpoint_on_desktop_and_mobile() {
+    let mut state = fleet_state();
+    let endpoint = state
+        .fleet
+        .as_ref()
+        .unwrap()
+        .config
+        .endpoint_id("lumi", "skadi");
+    assert!(state.activate_endpoint_projection(&endpoint));
+    state.set_pane_surface(surface());
+    state.compose(146, 100).unwrap();
+    let hit = state
+        .hits
+        .fleet_machines
+        .iter()
+        .find(|hit| hit.endpoint_id.as_ref() == Some(&endpoint))
+        .unwrap();
+    let point = (hit.rect.x + 5, hit.rect.y);
+    let mut outcome = ClientShellInput::default();
+    state.handle_endpoint_machine_click(point, &mut outcome);
+    assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::ActivateEndpoint { endpoint_id, .. } if endpoint_id == &endpoint)));
+    state.mode = ClientShellMode::Navigate;
+    state.compose(44, 100).unwrap();
+    let rect = state
+        .hits
+        .mobile_targets
+        .iter()
+        .find_map(|(rect, target)| {
+            matches!(target, ClientMobileTarget::Machine(id) if id == &endpoint).then_some(*rect)
+        })
+        .unwrap();
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::ActivateEndpoint { endpoint_id, .. } if endpoint_id == &endpoint)));
+}
+
+fn fleet_tree_state() -> ClientShellState {
+    let mut state = fleet_state();
+    state.sidebar_section_split = 0.75;
+    for id in state
+        .endpoints
+        .iter()
+        .map(|endpoint| endpoint.endpoint_id.clone())
+        .collect::<Vec<_>>()
+    {
+        let machine = state
+            .fleet
+            .as_ref()
+            .unwrap()
+            .machine_for(&id)
+            .unwrap()
+            .to_owned();
+        let mut snap = snapshot();
+        let mut scoped_agent = agent("tree-agent", AgentStatus::Working, 1);
+        scoped_agent.workspace_id = snap.focused_workspace_id.clone().unwrap();
+        snap.agents = vec![scoped_agent];
+        snap.workspaces[0].label = format!("{machine}-main");
+        snap.workspaces[0].custom_label = true;
+        snap.workspaces[0].branch = Some("main · clean".into());
+        snap.workspaces[0].worktree = Some(ClientShellWorktree {
+            key: "project".into(),
+            label: "project".into(),
+            is_linked_worktree: false,
+        });
+        let mut feature = snap.workspaces[0].clone();
+        feature.workspace_id = "ws_2".into();
+        feature.active_tab_id = "tab_2".into();
+        feature.number = 2;
+        feature.label = format!("{machine}-feature");
+        feature.branch = Some("feature · modified".into());
+        feature.focused = false;
+        feature.worktree.as_mut().unwrap().is_linked_worktree = true;
+        let mut notes = feature.clone();
+        notes.workspace_id = "ws_3".into();
+        notes.active_tab_id = "tab_3".into();
+        notes.number = 3;
+        notes.label = format!("{machine}-notes");
+        notes.branch = Some("notes · clean".into());
+        notes.worktree = None;
+        snap.workspaces.extend([feature, notes]);
+        state.set_endpoint_snapshot(&id, Box::new(snap));
+    }
+    state.set_pane_surface(surface());
+    state
+}
+
+fn fleet_sidebar_text(frame: &FrameData, area: Rect) -> String {
+    let mut output = String::new();
+    for y in area.y..area.bottom() {
+        let start = usize::from(y) * usize::from(frame.width) + usize::from(area.x);
+        output.push_str(
+            frame.cells[start..start + usize::from(area.width)]
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+                .trim_end(),
+        );
+        output.push('\n');
+    }
+    output
+}
+
+#[test]
+fn fleet_tree_preview_preserves_branch_continuations_and_machine_provenance() {
+    let mut state = fleet_tree_state();
+    let frame = state.compose(146, 48).unwrap();
+    let area = state.layout(146, 48).sidebar;
+    let preview = fleet_sidebar_text(&frame, area);
+    assert!(preview.contains("skadi · machines"));
+    assert!(preview.contains("khion-main"));
+    assert!(preview.contains("lumi-main"));
+    assert!(!preview.contains("odyssey"));
+    assert!(preview.contains('├') && preview.contains('└'));
+    assert_eq!(state.hits.fleet_machines.len(), 2);
+    assert!(state.hits.machines.is_empty());
+    let first = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_1")
+        .unwrap()
+        .rect;
+    assert_eq!(first.x, state.hits.workspace_body.x + 5);
+    assert!(first.height >= 2);
+    let buffer = frame.to_ratatui_buffer().unwrap();
+    assert_eq!(buffer[(first.x - 2, first.y)].symbol(), "├");
+    assert_eq!(buffer[(first.x - 2, first.y + 1)].symbol(), "│");
+    let child = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_2")
+        .unwrap()
+        .rect;
+    assert_eq!(buffer[(child.x - 2, child.y)].symbol(), "│");
+    assert_eq!(buffer[(child.x + 3, child.y)].symbol(), "└");
+    let last = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_3")
+        .unwrap()
+        .rect;
+    assert_eq!(buffer[(last.x - 2, last.y)].symbol(), "└");
+    assert_eq!(buffer[(last.x - 2, last.y + 1)].symbol(), " ");
+    let root = std::path::Path::new("/etc/skadi/.runtime/herdr-session-tree");
+    std::fs::create_dir_all(root).unwrap();
+    std::fs::write(root.join("tree-preview.txt"), preview).unwrap();
+    state.sidebar_width = 18;
+    state.sidebar_width_manual = true;
+    let narrow = state.compose(100, 32).unwrap();
+    let area = state.layout(100, 32).sidebar;
+    std::fs::write(
+        root.join("tree-preview-narrow.txt"),
+        fleet_sidebar_text(&narrow, area),
+    )
+    .unwrap();
+    for hit in &state.hits.workspaces {
+        assert!(hit.rect.x >= area.x + 5);
+        assert!(hit.rect.right() <= area.right());
+        assert!(hit.rect.bottom() <= state.hits.workspace_body.bottom());
+    }
+}
+
+#[test]
+fn fleet_tree_disclosure_and_label_selection_have_distinct_hitboxes() {
+    let mut state = fleet_tree_state();
+    state.compose(146, 48).unwrap();
+    let hit = state
+        .hits
+        .fleet_machines
+        .iter()
+        .find(|hit| hit.machine_id == "khion")
+        .unwrap();
+    let arrow = (hit.collapse_toggle.x, hit.collapse_toggle.y);
+    let label = (hit.rect.x + 4, hit.rect.y);
+    let mut outcome = ClientShellInput::default();
+    assert!(state.handle_endpoint_machine_click(arrow, &mut outcome));
+    assert!(outcome.actions.is_empty());
+    assert!(state.fleet.as_ref().unwrap().collapsed.contains("khion"));
+    state.compose(146, 48).unwrap();
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .all(|hit| !hit.endpoint_id.is_local()));
+    state.refresh_fleet_agent_visibility();
+    assert_eq!(
+        aggregate_navigation::aggregate_agent_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            state.config.agent_panel_sort
+        )
+        .len(),
+        1
+    );
+    let mut outcome = ClientShellInput::default();
+    assert!(state.handle_endpoint_machine_click(label, &mut outcome));
+    assert!(!state.fleet.as_ref().unwrap().collapsed.contains("khion"));
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn fleet_tree_keyboard_preview_and_activation_reveal_collapsed_machine() {
+    let mut state = fleet_tree_state();
+    let peer = state
+        .fleet
+        .as_ref()
+        .unwrap()
+        .config
+        .endpoint_id("lumi", "skadi");
+    state
+        .fleet
+        .as_mut()
+        .unwrap()
+        .collapsed
+        .insert("lumi".into());
+    state.mode = ClientShellMode::Navigate;
+    state.navigate_workspace_id = state.navigation_target(&ClientEndpointId::Local, "ws_3");
+    state.move_navigate_workspace(1);
+    assert_eq!(
+        state.navigate_workspace_id.as_ref().unwrap().endpoint_id,
+        peer
+    );
+    assert!(!state.fleet.as_ref().unwrap().collapsed.contains("lumi"));
+    state.compose(146, 16).unwrap();
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .any(|hit| hit.endpoint_id == peer && hit.workspace_id == "ws_1"));
+    state
+        .fleet
+        .as_mut()
+        .unwrap()
+        .collapsed
+        .insert("lumi".into());
+    let mut outcome = ClientShellInput::default();
+    assert!(state.focus_or_activate(
+        peer.clone(),
+        ClientEndpointFocusTarget::Pane("pane_1".into()),
+        &mut outcome
+    ));
+    assert!(!state.fleet.as_ref().unwrap().collapsed.contains("lumi"));
+    assert!(
+        matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint { endpoint_id, .. }] if endpoint_id == &peer)
+    );
+}
+
+#[test]
+fn fleet_tree_drag_rejects_peer_folder_and_connector_gutter_regions() {
+    for folder in [false, true] {
+        let mut state = fleet_tree_state();
+        state.compose(146, 48).unwrap();
+        let source = state
+            .hits
+            .workspaces
+            .iter()
+            .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_1")
+            .unwrap()
+            .rect;
+        let own = state
+            .hits
+            .workspaces
+            .iter()
+            .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_3")
+            .unwrap()
+            .rect;
+        let foreign = if folder {
+            state
+                .hits
+                .fleet_machines
+                .iter()
+                .find(|hit| hit.machine_id == "lumi")
+                .unwrap()
+                .rect
+        } else {
+            state
+                .hits
+                .fleet_workspace_regions
+                .iter()
+                .find(|region| !region.endpoint_id.is_local())
+                .unwrap()
+                .rect
+        };
+        let mouse = |kind, point: (u16, u16)| {
+            RawInputEvent::Mouse(MouseEvent {
+                kind,
+                column: point.0,
+                row: point.1,
+                modifiers: KeyModifiers::empty(),
+            })
+        };
+        state.handle_raw_events(vec![mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            (source.x + 1, source.y),
+        )]);
+        state.handle_raw_events(vec![mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            (own.x + 1, own.y),
+        )]);
+        assert!(matches!(
+            state.chrome_drag,
+            Some(ClientChromeDrag::Workspace { .. })
+        ));
+        state.handle_raw_events(vec![mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            (foreign.x + 1, foreign.y),
+        )]);
+        let release = state.handle_raw_events(vec![mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            (foreign.x + 1, foreign.y),
+        )]);
+        assert!(!release.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(request.method, crate::api::schema::Method::WorkspaceMove(_) | crate::api::schema::Method::WorkspaceMoveBlock(_)))));
+    }
+}
+
+#[test]
+fn fleet_tree_controls_obey_disabled_mouse_capture() {
+    let mut state = fleet_tree_state();
+    state.compose(146, 48).unwrap();
+    let folder = state.hits.fleet_machines[0].collapse_toggle;
+    let scope = state.hits.fleet_scope;
+    state.config.mouse_capture = false;
+    state.compose(146, 48).unwrap();
+    assert!(state.hits.fleet_machines.is_empty());
+    assert!(state.hits.fleet_workspace_regions.is_empty());
+    assert!(state.hits.fleet_scope.is_empty());
+    for rect in [folder, scope] {
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        assert!(!outcome
+            .actions
+            .iter()
+            .any(|action| matches!(action, ClientShellAction::ActivateEndpoint { .. })));
+    }
+    assert!(state.fleet.as_ref().unwrap().collapsed.is_empty());
+    assert_eq!(
+        state.fleet.as_ref().unwrap().scope,
+        crate::client::fleet::AgentScope::ThisSpace
+    );
+}
+
+#[test]
+fn fleet_tree_single_line_last_space_has_an_owned_append_lane() {
+    let mut state = fleet_state();
+    state.config.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+    state.config.spaces.row_gap = 0;
+    let mut snap = snapshot();
+    let mut second = snap.workspaces[0].clone();
+    second.workspace_id = "ws_2".into();
+    second.active_tab_id = "tab_2".into();
+    second.number = 2;
+    second.label = "second".into();
+    second.focused = false;
+    snap.workspaces.push(second);
+    state.set_snapshot(Box::new(snap));
+    state.set_pane_surface(surface());
+    state.compose(146, 48).unwrap();
+    let first = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_1")
+        .unwrap()
+        .rect;
+    let last = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "ws_2")
+        .unwrap()
+        .rect;
+    assert_eq!(first.height, 1);
+    assert_eq!(last.height, 1);
+    let point = (last.x + 1, last.bottom());
+    assert!(state
+        .hits
+        .fleet_workspace_regions
+        .iter()
+        .any(|region| region.endpoint_id.is_local() && super::super::contains(region.rect, point)));
+    assert!(!state
+        .hits
+        .fleet_machines
+        .iter()
+        .any(|hit| super::super::contains(hit.rect, point)));
+    let mouse = |kind, column, row| {
+        RawInputEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        first.x + 1,
+        first.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        point.0,
+        point.1,
+    )]);
+    let outcome = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        point.0,
+        point.1,
+    )]);
+    assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(&request.method, crate::api::schema::Method::WorkspaceMove(params) if params.workspace_id == "ws_1" && params.insert_index == 2))));
+}

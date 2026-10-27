@@ -66,18 +66,21 @@ impl ClientShellState {
         {
             return false;
         }
-        let hit = self
-            .hits
-            .machines
-            .iter()
-            .find(|hit| {
-                contains(hit.status_badge, (mouse.column, mouse.row))
-                    && self
-                        .machine_diagnostics
-                        .errors
-                        .contains_key(&hit.endpoint_id)
-            })
-            .map(|hit| hit.endpoint_id.clone());
+        let hit =
+            self.hits
+                .machines
+                .iter()
+                .map(|hit| (&hit.endpoint_id, hit.status_badge))
+                .chain(
+                    self.hits.fleet_machines.iter().filter_map(|hit| {
+                        hit.endpoint_id.as_ref().map(|id| (id, hit.status_badge))
+                    }),
+                )
+                .find(|(id, rect)| {
+                    contains(*rect, (mouse.column, mouse.row))
+                        && self.machine_diagnostics.errors.contains_key(*id)
+                })
+                .map(|(id, _)| id.clone());
         if mouse.kind == MouseEventKind::Moved {
             if self.machine_diagnostics.hover != hit {
                 self.machine_diagnostics.hover = hit;
@@ -97,15 +100,17 @@ impl ClientShellState {
         let Some(error) = self.machine_diagnostics.errors.get(&id) else {
             return true;
         };
-        let ClientEndpointId::Ssh(profile_id) = &id else {
-            return true;
+        let command = match &id {
+            ClientEndpointId::Ssh(profile_id)
+                if crate::remote::ssh_error_requires_authentication(error) =>
+            {
+                format!("herdr machine reconnect {profile_id}")
+            }
+            ClientEndpointId::Ssh(profile_id) => format!("herdr machine status {profile_id}"),
+            ClientEndpointId::Session(_) => "connection diagnostic".into(),
+            ClientEndpointId::Local => return true,
         };
-        let command = if crate::remote::ssh_error_requires_authentication(error) {
-            format!("herdr machine reconnect {profile_id}")
-        } else {
-            format!("herdr machine status {profile_id}")
-        };
-        let code = format!("machine-diagnostic:{}", profile_id);
+        let code = format!("machine-diagnostic:{}", id.storage_key());
         // An explicit click can reopen its diagnostic, but must not replace another notice.
         if self
             .visible_endpoint_notice

@@ -225,6 +225,9 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
 fn build_server_daemon_command(exe: PathBuf) -> Command {
     let mut command = Command::new(&exe);
     command
+        .env_remove("HERDR_FLEET_CONFIG")
+        .env_remove(crate::config::CLIENT_STATE_DIR_ENV_VAR);
+    command
         .arg("server")
         // Redirect stdio to /dev/null
         .stdin(std::process::Stdio::null())
@@ -303,6 +306,7 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
 /// 2. If no server → spawn server daemon → wait for socket readiness
 /// 3. Run the thin client (which connects to the server)
 pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
+    crate::client::validate_fleet_configuration()?;
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
     crate::platform::terminal_grid_size().map_err(|err| {
@@ -434,6 +438,21 @@ mod tests {
         let dir = unique_test_dir("nonexistent");
         let path = dir.join("s.sock");
         assert!(!is_server_listening_at(&path).unwrap());
+    }
+
+    #[test]
+    fn fleet_client_environment_does_not_reach_server_or_its_panes() {
+        let command = build_server_daemon_command(PathBuf::from("herdr"));
+        let removed = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value
+                    .is_none()
+                    .then_some(key.to_string_lossy().into_owned())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert!(removed.contains("HERDR_FLEET_CONFIG"));
+        assert!(removed.contains(crate::config::CLIENT_STATE_DIR_ENV_VAR));
     }
 
     #[test]

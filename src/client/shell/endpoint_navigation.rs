@@ -47,6 +47,32 @@ impl ClientShellState {
         point: (u16, u16),
         outcome: &mut ClientShellInput,
     ) -> bool {
+        if let Some(hit) = self
+            .hits
+            .fleet_machines
+            .iter()
+            .find(|hit| super::contains(hit.rect, point))
+        {
+            let collapse = super::contains(hit.collapse_toggle, point);
+            let machine = hit.machine_id.clone();
+            let endpoint = hit.endpoint_id.clone();
+            if collapse {
+                if let Some(fleet) = self.fleet.as_mut() {
+                    if !fleet.collapsed.remove(&machine) {
+                        fleet.collapsed.insert(machine);
+                    }
+                    fleet.persist();
+                }
+            } else if let Some(endpoint) = endpoint {
+                self.activate_endpoint(endpoint, outcome);
+            } else {
+                self.receive_endpoint_unavailable(
+                    "This machine has no running copy of this session".into(),
+                );
+            }
+            outcome.repaint = true;
+            return true;
+        }
         let Some(hit) = self
             .hits
             .machines
@@ -62,7 +88,7 @@ impl ClientShellState {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
             outcome.repaint = true;
-            if !collapse_toggle && endpoint_id.is_local() {
+            if !collapse_toggle && (self.fleet.is_some() || endpoint_id.is_local()) {
                 self.activate_endpoint(endpoint_id, outcome);
             }
         } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
@@ -225,6 +251,15 @@ impl ClientShellState {
         false
     }
 
+    pub(super) fn reveal_fleet_endpoint(&mut self, endpoint: &ClientEndpointId) {
+        if let Some(fleet) = self.fleet.as_mut() {
+            let machine = fleet.machine_for(endpoint).map(str::to_owned);
+            if machine.is_some_and(|machine| fleet.collapsed.remove(&machine)) {
+                fleet.persist();
+            }
+        }
+    }
+
     pub(super) fn activate_endpoint(
         &mut self,
         endpoint_id: ClientEndpointId,
@@ -239,7 +274,9 @@ impl ClientShellState {
             outcome.repaint = true;
             return false;
         }
-        if (endpoint_id.is_local() && (self.multi_endpoint_active() || !online))
+        self.reveal_fleet_endpoint(&endpoint_id);
+        if self.fleet.is_some()
+            || (endpoint_id.is_local() && (self.multi_endpoint_active() || !online))
             || endpoint_id != self.active_endpoint_id
         {
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
@@ -269,9 +306,11 @@ impl ClientShellState {
             outcome.repaint = true;
             return false;
         }
+        self.reveal_fleet_endpoint(&endpoint_id);
         // Local can still be displayed while a remote activation is pending.
         // Route explicit selections through the runtime so they can cancel that handoff.
         if endpoint_id == self.active_endpoint_id
+            && self.fleet.is_none()
             && !(endpoint_id.is_local() && (self.multi_endpoint_active() || !online))
         {
             let method = match target {

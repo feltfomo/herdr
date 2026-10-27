@@ -509,6 +509,13 @@ impl ClientShellState {
     }
 
     fn workspace_drop_target_at(&self, point: (u16, u16)) -> Option<(Option<String>, u16)> {
+        if self.fleet.is_some()
+            && !self.hits.fleet_workspace_regions.iter().any(|region| {
+                region.endpoint_id == self.active_endpoint_id && super::contains(region.rect, point)
+            })
+        {
+            return None;
+        }
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
             || point.1 >= self.hits.new_workspace.y
@@ -2019,6 +2026,16 @@ impl ClientShellState {
                                 outcome.repaint = true;
                             }
                         }
+                    }
+                    return;
+                }
+                if super::contains(self.hits.fleet_scope, point) {
+                    if let Some(fleet) = self.fleet.as_mut() {
+                        fleet.scope = fleet.scope.next();
+                        fleet.persist();
+                        self.refresh_fleet_agent_visibility();
+                        self.agent_scroll = 0;
+                        outcome.repaint = true;
                     }
                     return;
                 }

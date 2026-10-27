@@ -230,6 +230,7 @@ pub(super) fn render_mode_bar(
 }
 
 pub(super) struct ShellRenderState<'a> {
+    pub(super) fleet: Option<&'a crate::client::fleet::State>,
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
@@ -268,7 +269,7 @@ pub(super) fn render_shell(
         );
     }
     if layout.sidebar.width > 0 {
-        if state.endpoints.len() > 1 {
+        if state.fleet.is_some() || state.endpoints.len() > 1 {
             if state.sidebar_collapsed {
                 super::endpoint_sidebar::render_collapsed(
                     buffer,
@@ -329,6 +330,9 @@ pub(super) fn render_shell(
         hits.agent_sort_toggle = Rect::default();
         hits.new_workspace = Rect::default();
         hits.machines.clear();
+        hits.fleet_machines.clear();
+        hits.fleet_scope = Rect::default();
+        hits.fleet_workspace_regions.clear();
         hits.workspaces.clear();
         hits.agents.clear();
         hits.endpoint_agents.clear();

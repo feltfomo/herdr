@@ -42,10 +42,10 @@ pub(crate) enum EndpointSupervisorEvent {
     },
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 enum ConnectTarget {
     Local(PathBuf),
-    Ssh(super::SavedSshEndpoint),
+    Ssh(super::SavedSshEndpoint, crate::remote::RemoteAttachPolicy),
 }
 
 struct ReconnectState {
@@ -84,7 +84,13 @@ impl EndpointSupervisors {
             .map(|profile| {
                 (
                     ClientEndpointId::Ssh(profile.id.clone()),
-                    ReconnectState::new(ConnectTarget::Ssh(profile.clone()), now),
+                    ReconnectState::new(
+                        ConnectTarget::Ssh(
+                            profile.clone(),
+                            crate::remote::RemoteAttachPolicy::StartIfMissing,
+                        ),
+                        now,
+                    ),
                 )
             })
             .collect();
@@ -111,7 +117,7 @@ impl EndpointSupervisors {
     ) -> Vec<ClientEndpointId> {
         let mut retired = Vec::new();
         self.endpoints.retain(|endpoint_id, state| {
-            let ConnectTarget::Ssh(previous) = &state.target else {
+            let ConnectTarget::Ssh(previous, _) = &state.target else {
                 return true;
             };
             let keep = profiles.iter().any(|profile| {
@@ -129,8 +135,59 @@ impl EndpointSupervisors {
             let state = self
                 .endpoints
                 .entry(ClientEndpointId::Ssh(profile.id.clone()))
-                .or_insert_with(|| ReconnectState::new(ConnectTarget::Ssh(profile.clone()), now));
-            state.target = ConnectTarget::Ssh(profile.clone());
+                .or_insert_with(|| {
+                    ReconnectState::new(
+                        ConnectTarget::Ssh(
+                            profile.clone(),
+                            crate::remote::RemoteAttachPolicy::StartIfMissing,
+                        ),
+                        now,
+                    )
+                });
+            state.target = ConnectTarget::Ssh(
+                profile.clone(),
+                crate::remote::RemoteAttachPolicy::StartIfMissing,
+            );
+        }
+        retired
+    }
+
+    pub(in crate::client) fn reconcile_fleet(
+        &mut self,
+        sessions: &std::collections::BTreeMap<ClientEndpointId, crate::client::fleet::Session>,
+        now: Instant,
+    ) -> Vec<ClientEndpointId> {
+        let desired = sessions
+            .values()
+            .filter(|s| s.running && !s.endpoint.is_local())
+            .map(|session| {
+                let target = match &session.transport {
+                    crate::client::fleet::Transport::Local(path) => {
+                        ConnectTarget::Local(path.clone())
+                    }
+                    crate::client::fleet::Transport::Ssh(profile) => ConnectTarget::Ssh(
+                        profile.clone(),
+                        crate::remote::RemoteAttachPolicy::ExistingOnly,
+                    ),
+                };
+                (session.endpoint.clone(), target)
+            })
+            .collect::<HashMap<_, _>>();
+        let mut retired = Vec::new();
+        self.endpoints.retain(|id, state| {
+            if !matches!(id, ClientEndpointId::Session(_)) {
+                return true;
+            }
+            let keep = desired.get(id) == Some(&state.target);
+            if !keep {
+                retired.push(id.clone());
+            }
+            keep
+        });
+        for (id, target) in desired {
+            self.endpoints
+                .entry(id)
+                .or_insert_with(|| ReconnectState::new(target, now));
         }
         retired
     }
@@ -269,7 +326,7 @@ fn connect_once(
     endpoint_id: ClientEndpointId,
     generation: u64,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
-    let (mut stream, lifetime): (_, Box<dyn Send>) = match target {
+    let (mut stream, lifetime) = match target {
         ConnectTarget::Local(path) => {
             let stream = crate::ipc::connect_local_stream(path).map_err(|error| {
                 // An absent Local socket is transient, unlike a missing SSH install.
@@ -282,15 +339,16 @@ fn connect_once(
                     error
                 }
             })?;
-            (stream, Box::new(()))
+            (stream, None)
         }
-        ConnectTarget::Ssh(profile) => {
+        ConnectTarget::Ssh(profile, policy) => {
             let connected = crate::remote::connect_saved_ssh(
                 profile.id.as_str(),
                 &profile.target,
                 &profile.session,
+                *policy,
             )?;
-            (connected.stream, Box::new(connected.bridge))
+            (connected.stream, Some(connected.bridge))
         }
     };
     let handshake = super::super::do_handshake(
@@ -309,7 +367,12 @@ fn connect_once(
         false,
         matches!(target, ConnectTarget::Local(_)),
     )
-    .map_err(handshake_error)?;
+    .map_err(|error| {
+        lifetime
+            .as_ref()
+            .and_then(crate::remote::SavedSshBridge::reported_failure)
+            .unwrap_or_else(|| handshake_error(error))
+    })?;
     if handshake.encoding != RenderEncoding::SemanticFrame {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -319,7 +382,8 @@ fn connect_once(
     let negotiation = EndpointNegotiation::new(
         handshake.endpoint_methods.unwrap_or_default(),
         handshake.endpoint_capabilities.unwrap_or_default(),
-    );
+    )
+    .with_shared_filesystem(matches!(target, ConnectTarget::Local(_)));
     if !negotiation.supports_surface_interest()
         || (!endpoint_id.is_local() && !negotiation.supports_health_check())
     {
@@ -385,6 +449,45 @@ mod tests {
             session: "agents".into(),
             enabled: true,
         }
+    }
+
+    #[test]
+    fn fleet_ssh_reconnect_policy_never_allows_session_startup() {
+        let now = Instant::now();
+        let ordinary = profile();
+        let ordinary_id = ClientEndpointId::Ssh(ordinary.id.clone());
+        let supervisors = EndpointSupervisors::new(&[ordinary], now);
+        assert!(matches!(
+            supervisors.endpoints[&ordinary_id].target,
+            ConnectTarget::Ssh(_, crate::remote::RemoteAttachPolicy::StartIfMissing)
+        ));
+        let mut fleet =
+            crate::client::fleet::State::isolated(crate::client::fleet::tests::config());
+        fleet.apply(crate::client::fleet::Discovery {
+            machine: "lumi".into(),
+            epoch: 1,
+            result: Ok(["skadi", "odyssey", "default"]
+                .into_iter()
+                .map(|name| crate::client::fleet::DiscoveredSession {
+                    name: name.into(),
+                    running: true,
+                })
+                .collect()),
+        });
+        let id = fleet.config.endpoint_id("lumi", "skadi");
+        let mut supervisors = EndpointSupervisors::new(&[], now);
+        supervisors.reconcile_fleet(&fleet.sessions, now);
+        assert_eq!(supervisors.endpoints.len(), 1);
+        assert!(matches!(
+            supervisors.endpoints[&id].target,
+            ConnectTarget::Ssh(_, crate::remote::RemoteAttachPolicy::ExistingOnly)
+        ));
+        supervisors.reconcile_fleet(&fleet.sessions, now + Duration::from_secs(1));
+        assert!(matches!(
+            supervisors.endpoints[&id].target,
+            ConnectTarget::Ssh(_, crate::remote::RemoteAttachPolicy::ExistingOnly)
+        ));
+        assert!(supervisors.endpoints[&id].next_attempt.is_some());
     }
 
     #[test]

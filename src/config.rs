@@ -12,7 +12,7 @@ mod write;
 
 pub use self::{
     io::{
-        config_diagnostic_summary, config_dir, config_path, load_live_config,
+        client_state_dir, config_diagnostic_summary, config_dir, config_path, load_live_config,
         remove_keybinding_config_sections, remove_section_key, state_dir, upsert_section_bool,
         upsert_section_value,
     },
@@ -54,6 +54,7 @@ pub(crate) use self::{
 pub(crate) use self::{keybinds::CommandKeybindType, model::KeysConfig};
 
 pub const CONFIG_PATH_ENV_VAR: &str = "HERDR_CONFIG_PATH";
+pub const CLIENT_STATE_DIR_ENV_VAR: &str = "HERDR_CLIENT_STATE_DIR";
 
 pub(crate) fn is_keybinding_config_diagnostic(diagnostic: &str) -> bool {
     if diagnostic.starts_with("config parse error:") || diagnostic.starts_with("config read error:")

@@ -36,8 +36,10 @@ impl ClientShellState {
             .remote_collapsed_groups
             .iter()
             .filter_map(|(endpoint_id, groups)| {
-                let ClientEndpointId::Ssh(profile_id) = endpoint_id else {
-                    return None;
+                let profile_id = match endpoint_id {
+                    ClientEndpointId::Ssh(id) => id.to_string(),
+                    ClientEndpointId::Session(_) => endpoint_id.storage_key(),
+                    ClientEndpointId::Local => return None,
                 };
                 let mut collapsed_groups = groups.iter().cloned().collect::<Vec<_>>();
                 collapsed_groups.sort();
@@ -219,7 +221,25 @@ impl ClientShellConfig {
         }
     }
 
-    pub(super) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
+    pub(in crate::client) fn with_fleet_preferences_path(
+        mut self,
+        path: std::path::PathBuf,
+    ) -> Self {
+        match preferences::load_guarded(&path) {
+            Ok(preferences) => {
+                self.preferences = preferences.unwrap_or_default();
+                self.preferences_path = Some(path);
+            }
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "preserving unreadable fleet chrome preferences; writes disabled");
+                self.preferences = Default::default();
+                self.preferences_path = None;
+            }
+        }
+        self
+    }
+
+    pub(in crate::client) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
         self.preferences = preferences::load(&path).unwrap_or_default();
         self.preferences_path = Some(path);
         self

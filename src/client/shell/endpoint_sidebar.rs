@@ -19,6 +19,10 @@ pub(super) fn render_collapsed(
     state: &mut ShellRenderState<'_>,
     hits: &mut ShellHitMap,
 ) {
+    if state.fleet.is_some() {
+        render_expanded(buffer, area, None, config, state, hits);
+        return;
+    }
     let palette = &config.palette;
     super::render::render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
@@ -253,12 +257,15 @@ pub(super) fn render_expanded(
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
         crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    let heading = state
+        .fleet
+        .map(|fleet| format!(" {} · machines", fleet.config.selected.session));
     put_text(
         buffer,
         workspace_area.x,
         workspace_area.y,
         workspace_area.width,
-        " machines",
+        heading.as_deref().unwrap_or(" machines"),
         Style::default()
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
@@ -267,29 +274,54 @@ pub(super) fn render_expanded(
     let empty_collapsed_groups = HashSet::new();
 
     enum Row {
+        Machine {
+            machine: usize,
+            endpoint: Option<usize>,
+        },
         Endpoint(usize),
         Workspace {
             endpoint: usize,
             entry: WorkspaceEntry,
+            branch: Option<super::fleet_tree::Branch>,
         },
     }
     let mut rows = Vec::new();
-    for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
-        rows.push(Row::Endpoint(endpoint_index));
-        if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
-            continue;
-        }
-        if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                .unwrap_or(&empty_collapsed_groups);
-            rows.extend(
-                super::sidebar::workspace_entries(snapshot, collapsed_groups)
-                    .into_iter()
-                    .map(|entry| Row::Workspace {
-                        endpoint: endpoint_index,
-                        entry,
-                    }),
-            );
+    if let Some(fleet) = state.fleet {
+        super::fleet_tree::rows(state, fleet, |row| {
+            rows.push(match row {
+                super::fleet_tree::Row::Machine { machine, endpoint } => {
+                    Row::Machine { machine, endpoint }
+                }
+                super::fleet_tree::Row::Workspace {
+                    endpoint,
+                    entry,
+                    branch,
+                } => Row::Workspace {
+                    endpoint,
+                    entry,
+                    branch: Some(branch),
+                },
+            })
+        });
+    } else {
+        for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
+            rows.push(Row::Endpoint(endpoint_index));
+            if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
+                continue;
+            }
+            if let Some(snapshot) = endpoint.snapshot.as_deref() {
+                let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
+                    .unwrap_or(&empty_collapsed_groups);
+                rows.extend(
+                    super::sidebar::workspace_entries(snapshot, collapsed_groups)
+                        .into_iter()
+                        .map(|entry| Row::Workspace {
+                            endpoint: endpoint_index,
+                            entry,
+                            branch: None,
+                        }),
+                );
+            }
         }
     }
     let body = Rect::new(
@@ -304,8 +336,10 @@ pub(super) fn render_expanded(
     let row_heights = rows
         .iter()
         .map(|row| match row {
-            Row::Endpoint(_) => 1,
-            Row::Workspace { endpoint, entry } => {
+            Row::Machine { .. } | Row::Endpoint(_) => 1,
+            Row::Workspace {
+                endpoint, entry, ..
+            } => {
                 let endpoint = &state.endpoints[*endpoint];
                 let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
                     .unwrap_or(&empty_collapsed_groups);
@@ -343,8 +377,15 @@ pub(super) fn render_expanded(
                 Some(Row::Workspace {
                     endpoint: next_endpoint,
                     entry,
+                    ..
                 }),
             ) if endpoint == next_endpoint => u16::from(!entry.indented) * config.spaces.row_gap,
+            (
+                Row::Workspace {
+                    branch: Some(_), ..
+                },
+                _,
+            ) => 1,
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -352,7 +393,9 @@ pub(super) fn render_expanded(
     let reveal_focus = !body.is_empty() && std::mem::take(state.reveal_focused_workspace);
     if reveal_navigation || reveal_focus {
         let selected_row = rows.iter().position(|row| match row {
-            Row::Workspace { endpoint, entry } => {
+            Row::Workspace {
+                endpoint, entry, ..
+            } => {
                 let endpoint = &state.endpoints[*endpoint];
                 endpoint
                     .snapshot
@@ -372,7 +415,7 @@ pub(super) fn render_expanded(
                         }
                     })
             }
-            Row::Endpoint(_) => false,
+            Row::Machine { .. } | Row::Endpoint(_) => false,
         });
         if let Some(selected_row) = selected_row {
             *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
@@ -400,18 +443,37 @@ pub(super) fn render_expanded(
     let mut y = body.y;
     for (row_index, row) in rows.iter().enumerate().skip(*state.workspace_scroll) {
         match row {
+            Row::Machine { machine, endpoint } => {
+                if y >= body.bottom() {
+                    break;
+                }
+                if let Some(fleet) = state.fleet {
+                    let rect = Rect::new(body.x, y, content_width, 1);
+                    hits.fleet_machines.push(super::fleet_tree::render_machine(
+                        buffer, rect, *machine, *endpoint, state, fleet, palette,
+                    ));
+                }
+                y = y.saturating_add(1);
+            }
             Row::Endpoint(index) => {
                 if y >= body.bottom() {
                     break;
                 }
                 let endpoint = &state.endpoints[*index];
-                let rect = Rect::new(body.x, y, content_width, 1);
+                let indent = u16::from(state.fleet.is_some());
+                let rect = Rect::new(
+                    body.x.saturating_add(indent),
+                    y,
+                    content_width.saturating_sub(indent),
+                    1,
+                );
                 let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
                 let marker = if collapsed { "▸" } else { "▾" };
                 let status_badge = render_endpoint_row(
                     buffer,
                     rect,
                     marker,
+                    &endpoint.label,
                     endpoint,
                     collapsed && &endpoint.endpoint_id == state.active_endpoint_id,
                     state.machine_diagnostics,
@@ -432,7 +494,11 @@ pub(super) fn render_expanded(
                     .saturating_add(1)
                     .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
             }
-            Row::Workspace { endpoint, entry } => {
+            Row::Workspace {
+                endpoint,
+                entry,
+                branch,
+            } => {
                 let endpoint = &state.endpoints[*endpoint];
                 let Some(snapshot) = endpoint.snapshot.as_deref() else {
                     continue;
@@ -458,12 +524,24 @@ pub(super) fn render_expanded(
                     break;
                 }
                 let rect = Rect::new(body.x, y, content_width, height);
-                let nested = Rect::new(
-                    rect.x.saturating_add(2),
-                    rect.y,
-                    rect.width.saturating_sub(2),
-                    rect.height,
-                );
+                let nested = if let Some(branch) = branch {
+                    super::fleet_tree::render_branch(
+                        buffer,
+                        rect,
+                        entry,
+                        *branch,
+                        gaps.get(row_index).copied().unwrap_or(0),
+                        body.bottom(),
+                        palette,
+                    )
+                } else {
+                    Rect::new(
+                        rect.x.saturating_add(2),
+                        rect.y,
+                        rect.width.saturating_sub(2),
+                        rect.height,
+                    )
+                };
                 let endpoint_active = &endpoint.endpoint_id == state.active_endpoint_id;
                 let selected = state.selected_workspace_id.is_some_and(|target| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
@@ -478,7 +556,9 @@ pub(super) fn render_expanded(
                     endpoint_active && workspace.focused,
                     selected,
                     state.selected_workspace_id.is_some(),
-                    false,
+                    branch.is_some()
+                        && endpoint_active
+                        && state.dragged_workspace_id == Some(workspace.workspace_id.as_str()),
                     palette,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {
@@ -489,16 +569,32 @@ pub(super) fn render_expanded(
                             .add_modifier(Modifier::DIM),
                     );
                 }
-                let group_toggle = super::sidebar::render_parent_group_toggle(
-                    buffer,
-                    rect,
-                    snapshot,
-                    entry.index,
-                    collapsed_groups,
-                    palette,
-                );
+                let hit_rect = if branch.is_some() { nested } else { rect };
+                if branch.is_some() && !hit_rect.is_empty() {
+                    let end = rect
+                        .bottom()
+                        .saturating_add(gaps.get(row_index).copied().unwrap_or(0))
+                        .min(body.bottom());
+                    hits.fleet_workspace_regions
+                        .push(super::fleet_tree::WorkspaceRegion {
+                            rect: Rect::new(rect.x, rect.y, rect.width, end.saturating_sub(rect.y)),
+                            endpoint_id: endpoint.endpoint_id.clone(),
+                        });
+                }
+                let group_toggle = if hit_rect.is_empty() {
+                    None
+                } else {
+                    super::sidebar::render_parent_group_toggle(
+                        buffer,
+                        hit_rect,
+                        snapshot,
+                        entry.index,
+                        collapsed_groups,
+                        palette,
+                    )
+                };
                 hits.workspaces.push(WorkspaceHit {
-                    rect,
+                    rect: hit_rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
                     workspace_id: workspace.workspace_id.clone(),
                     indented: entry.indented,
@@ -563,6 +659,23 @@ pub(super) fn render_expanded(
         state.agent_scroll,
         hits,
     );
+    if let Some(fleet) = state.fleet {
+        let rect = Rect::new(
+            detail_area.x.saturating_add(1),
+            detail_area.y.saturating_add(2),
+            detail_area.width.saturating_sub(2),
+            u16::from(detail_area.height > 2),
+        );
+        put_text(
+            buffer,
+            rect.x,
+            rect.y,
+            rect.width,
+            &format!("scope · {}", fleet.scope.label()),
+            Style::default().fg(palette.text),
+        );
+        hits.fleet_scope = rect;
+    }
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
         area.bottom().saturating_sub(1),
@@ -579,18 +692,23 @@ pub(super) fn render_expanded(
     );
 }
 
-fn active_endpoint_label<'a>(state: &'a ShellRenderState<'_>) -> &'a str {
+fn active_endpoint_label(state: &ShellRenderState<'_>) -> String {
+    if let Some(fleet) = state.fleet {
+        return fleet.label(state.active_endpoint_id);
+    }
     state
         .endpoints
         .iter()
         .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
         .map_or("Local", |endpoint| endpoint.label.as_str())
+        .to_owned()
 }
 
-fn render_endpoint_row(
+pub(super) fn render_endpoint_row(
     buffer: &mut Buffer,
     rect: Rect,
     marker: &str,
+    label: &str,
     endpoint: &ClientShellEndpoint,
     highlighted: bool,
     auth: &super::machine_diagnostics::MachineDiagnostics,
@@ -599,7 +717,10 @@ fn render_endpoint_row(
     if highlighted {
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
     }
-    let (glyph, state, color) = endpoint_status_presentation(endpoint.status, palette);
+    let (glyph, mut state, color) = endpoint_status_presentation(endpoint.status, palette);
+    if endpoint.fleet_label.is_some() && endpoint.status == ClientEndpointStatus::Disabled {
+        state = "stopped";
+    }
     let state = if endpoint.status == ClientEndpointStatus::Online {
         ""
     } else {
@@ -622,7 +743,7 @@ fn render_endpoint_row(
         rect.x,
         rect.y,
         rect.width.saturating_sub(signal_width.saturating_add(1)),
-        &format!(" {marker} {}", endpoint.label),
+        &format!(" {marker} {label}"),
         Style::default()
             .fg(
                 if matches!(endpoint.status, ClientEndpointStatus::Disabled) {

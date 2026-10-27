@@ -48,13 +48,15 @@ impl ClientShellState {
             });
         // A resize invalidates pane geometry, not the healthy Local workspace chrome.
         let local_snapshot = self.snapshot.as_deref().filter(|_| {
-            self.endpoints.len() == 1
+            self.fleet.is_none()
+                && self.endpoints.len() == 1
                 && !self.sidebar_collapsed
                 && layout.sidebar.width > 0
                 && self.endpoint_status(&self.active_endpoint_id)
                     == Some(ClientEndpointStatus::Online)
         });
         let mut render_state = render::ShellRenderState {
+            fleet: self.fleet.as_ref(),
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
@@ -152,6 +154,7 @@ impl ClientShellState {
         cols: u16,
         rows: u16,
     ) -> Option<crate::client::frame_output::ComposedFrame> {
+        self.refresh_fleet_agent_visibility();
         self.last_composed_at = Some(std::time::Instant::now());
         self.selection_repaint_deadline = None;
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
@@ -211,6 +214,7 @@ impl ClientShellState {
             snapshot,
             &self.config,
             render::ShellRenderState {
+                fleet: self.fleet.as_ref(),
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,

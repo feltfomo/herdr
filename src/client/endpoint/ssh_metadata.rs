@@ -53,8 +53,8 @@ impl SshMetadataCache {
         let id = ProfileId::parse(profile_id)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Self {
-            path: crate::config::state_dir()
-                .join("client/ssh-metadata")
+            path: crate::config::client_state_dir()
+                .join("ssh-metadata")
                 .join(format!("{id}.json")),
             target: target.to_owned(),
             session: session.to_owned(),

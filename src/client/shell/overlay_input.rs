@@ -349,6 +349,10 @@ impl ClientShellState {
             title: "new workspace",
             input: TextEditor::new(&suggested_name, true),
             target: ClientRenameTarget::NewWorkspace {
+                endpoint_id: self.active_endpoint_id.clone(),
+                boot_id: self
+                    .endpoint_boot_id(&self.active_endpoint_id)
+                    .map(str::to_owned),
                 source_workspace_id,
                 cwd,
                 suggested_name,
@@ -937,19 +941,32 @@ impl ClientShellState {
         let trimmed = rename.input.trim();
         let method = match rename.target {
             ClientRenameTarget::NewWorkspace {
+                endpoint_id,
+                boot_id,
                 source_workspace_id,
                 cwd,
                 suggested_name,
-            } => Some(crate::api::schema::Method::WorkspaceCreate(
-                crate::api::schema::WorkspaceCreateParams {
-                    source_workspace_id,
-                    cwd,
-                    focus: true,
-                    label: (!trimmed.is_empty() && trimmed != suggested_name)
-                        .then(|| trimmed.to_owned()),
-                    env: Default::default(),
-                },
-            )),
+            } => {
+                if endpoint_id != self.active_endpoint_id
+                    || boot_id.as_deref() != self.endpoint_boot_id(&endpoint_id)
+                {
+                    self.receive_endpoint_unavailable(
+                        "The destination changed; reopen New space on the intended session".into(),
+                    );
+                    outcome.repaint = true;
+                    return;
+                }
+                Some(crate::api::schema::Method::WorkspaceCreate(
+                    crate::api::schema::WorkspaceCreateParams {
+                        source_workspace_id,
+                        cwd,
+                        focus: true,
+                        label: (!trimmed.is_empty() && trimmed != suggested_name)
+                            .then(|| trimmed.to_owned()),
+                        env: Default::default(),
+                    },
+                ))
+            }
             ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
                 crate::api::schema::Method::WorkspaceRename(
                     crate::api::schema::WorkspaceRenameParams {

@@ -7,6 +7,12 @@ mod saved;
 #[cfg(unix)]
 mod ssh_agent;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemoteAttachPolicy {
+    StartIfMissing,
+    ExistingOnly,
+}
+
 pub(crate) use args::*;
 pub(crate) use attach::*;
 pub(crate) use host::run_remote_client_bridge;

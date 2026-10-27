@@ -27,6 +27,8 @@ const BRIDGE_SOCKET_PERMISSION_MODE: u32 = 0o600;
 const REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = 16 * 1024;
+const SESSION_DISCOVERY_OUTPUT_LIMIT: usize = 1024 * 1024;
+const SESSION_DISCOVERY_COUNT_LIMIT: usize = 4096;
 const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CURRENT_PROTOCOL: u32 = crate::protocol::PROTOCOL_VERSION;
@@ -144,6 +146,10 @@ impl SavedSshSetup {
             manage,
             crate::session::DEFAULT_SESSION_NAME.to_owned(),
         );
+        Self::connect_with_ssh(ssh)
+    }
+
+    fn connect_with_ssh(ssh: RemoteSsh) -> io::Result<Self> {
         let remote_herdr =
             RemoteHerdr::for_platform(detect_remote_platform(&ssh)?.into_setup_platform());
         let candidates = remote_binary_candidates(&ssh, &remote_herdr)?;
@@ -152,6 +158,106 @@ impl SavedSshSetup {
             remote_herdr,
             candidates,
         })
+    }
+
+    pub(crate) fn create_session(target: &str, session_name: &str) -> io::Result<()> {
+        crate::client::endpoint::SavedSshEndpoint::new("peer", target, session_name)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        if session_name == crate::session::DEFAULT_SESSION_NAME {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "default is reserved",
+            ));
+        }
+        let mut ssh = RemoteSsh::new_noninteractive(target.to_owned());
+        ssh.output_limit = Some(SESSION_DISCOVERY_OUTPUT_LIMIT);
+        let mut setup = Self::connect_with_ssh(ssh)?;
+        if setup.candidates.len() > 16 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "remote discovery returned too many Herdr installations",
+            ));
+        }
+        ensure_session_absent(&setup.all_sessions()?, session_name)?;
+        setup.ssh.session_name = session_name.to_owned();
+        let prepared = prepare_discovered_remote_herdr(
+            &setup.ssh,
+            setup.remote_herdr,
+            &setup.candidates,
+            false,
+            true,
+        )?;
+        let sessions = query_remote_sessions(&setup.ssh, &prepared.remote_herdr)?;
+        ensure_session_absent(&sessions, session_name)?;
+        if remote_server_status(&setup.ssh, &prepared.remote_herdr, true)?
+            != RemoteServerStatus::NotRunning
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the requested session started during setup; it was left running",
+            ));
+        }
+        // This bridge may attach if another creator wins the final race. Never use
+        // ensure_remote_server_ready here, because it can restart that server.
+        let command = prepared
+            .remote_herdr
+            .executable
+            .saved_bridge_command(session_name);
+        let output = setup
+            .ssh
+            .shell_output(&prepared.remote_herdr.platform, &command)?;
+        if !output.status.success() {
+            return Err(command_failed("remote session startup failed", &output));
+        }
+        match remote_server_status(&setup.ssh, &prepared.remote_herdr, true)? {
+            RemoteServerStatus::Running {
+                endpoint_protocol_generation,
+                surface_interest,
+                health_check,
+                detached_server_daemon,
+                ..
+            } if remote_server_restart_reason(
+                endpoint_protocol_generation,
+                detached_server_daemon,
+                true,
+                surface_interest,
+                health_check,
+            )
+            .is_none() =>
+            {
+                Ok(())
+            }
+            _ => Err(io::Error::other(
+                "remote session is not ready; no existing server was restarted",
+            )),
+        }
+    }
+
+    fn all_sessions(&self) -> io::Result<Vec<RemoteSessionJson>> {
+        if self.candidates.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no installed remote Herdr can list sessions; install Herdr on the peer first",
+            ));
+        }
+        let mut failure = String::new();
+        for candidate in &self.candidates {
+            match query_remote_sessions(&self.ssh, candidate) {
+                Ok(sessions) => return Ok(sessions),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::InvalidData | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error)
+                }
+                Err(error) => failure = error.to_string(),
+            }
+        }
+        Err(io::Error::other(format!(
+            "could not discover remote Herdr sessions: {failure}"
+        )))
     }
 
     pub(crate) fn running_sessions(&self) -> io::Result<Vec<String>> {
@@ -263,6 +369,58 @@ struct RemoteSessionListJson {
 struct RemoteSessionJson {
     name: String,
     running: bool,
+}
+
+fn parse_remote_sessions(bytes: &[u8]) -> io::Result<Vec<RemoteSessionJson>> {
+    if bytes.len() > SESSION_DISCOVERY_OUTPUT_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote session list exceeds the output limit",
+        ));
+    }
+    let list: RemoteSessionListJson = serde_json::from_slice(bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid remote session list: {error}"),
+        )
+    })?;
+    if list.sessions.len() > SESSION_DISCOVERY_COUNT_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote session list contains too many sessions",
+        ));
+    }
+    for session in &list.sessions {
+        crate::session::validate_name(&session.name).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid remote session name: {error}"),
+            )
+        })?;
+    }
+    Ok(list.sessions)
+}
+
+fn query_remote_sessions(
+    ssh: &RemoteSsh,
+    remote: &RemoteHerdr,
+) -> io::Result<Vec<RemoteSessionJson>> {
+    let output = ssh.shell_output(
+        &remote.platform,
+        &remote.executable.command(&["session", "list", "--json"]),
+    )?;
+    if !output.status.success() {
+        return Err(command_failed("remote session query failed", &output));
+    }
+    parse_remote_sessions(&output.stdout)
+}
+
+fn ensure_session_absent(sessions: &[RemoteSessionJson], name: &str) -> io::Result<()> {
+    if sessions.iter().any(|session| session.name == name) {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+            format!("remote session '{name}' already exists, including stopped sessions; choose a new name")));
+    }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -394,17 +552,34 @@ impl RemoteExecutable {
         }
     }
 
+    #[cfg(test)]
     fn bridge_command(&self, session_name: &str) -> String {
         self.bridge_command_with_idle_timeout(session_name, false)
     }
 
+    #[cfg(test)]
     fn bridge_command_with_idle_timeout(&self, session_name: &str, idle_timeout: bool) -> String {
-        let command = if idle_timeout {
-            &["remote-client-bridge", "--idle-timeout-v1"][..]
-        } else {
-            &["remote-client-bridge"][..]
-        };
-        let args = Self::session_args(session_name, command);
+        self.bridge_command_with_policy(
+            session_name,
+            idle_timeout,
+            super::RemoteAttachPolicy::StartIfMissing,
+        )
+    }
+
+    fn bridge_command_with_policy(
+        &self,
+        session_name: &str,
+        idle_timeout: bool,
+        policy: super::RemoteAttachPolicy,
+    ) -> String {
+        let mut command = vec!["remote-client-bridge"];
+        if idle_timeout {
+            command.push("--idle-timeout-v1");
+        }
+        if policy == super::RemoteAttachPolicy::ExistingOnly {
+            command.push("--existing-only-v1");
+        }
+        let args = Self::session_args(session_name, &command);
         match self {
             Self::PosixShellPath(_) => {
                 posix_remote_output_command(&format!("exec {}", self.command(&args)))
@@ -780,6 +955,7 @@ pub(super) struct RemoteSsh {
     session_name: String,
     managed_config: Option<ManagedSshConfig>,
     noninteractive: bool,
+    output_limit: Option<usize>,
 }
 
 impl RemoteSsh {
@@ -799,6 +975,7 @@ impl RemoteSsh {
             session_name,
             managed_config,
             noninteractive: false,
+            output_limit: None,
         }
     }
 
@@ -871,7 +1048,7 @@ impl RemoteSsh {
                 "ssh bootstrap stdin missing",
             ))
         };
-        let output = wait_with_output_timeout(child, NONINTERACTIVE_SSH_COMMAND_TIMEOUT)?;
+        let output = self.wait_for_output(child)?;
         write_result?;
         normalize_remote_output(output)
     }
@@ -886,7 +1063,7 @@ impl RemoteSsh {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let output = if self.noninteractive {
-            wait_with_output_timeout(command.spawn()?, NONINTERACTIVE_SSH_COMMAND_TIMEOUT)
+            self.wait_for_output(command.spawn()?)
         } else {
             output_with_forwarded_stderr(command.spawn()?, None)
         }?;
@@ -895,6 +1072,15 @@ impl RemoteSsh {
 
     fn posix_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
         self.framed_user_shell_output(&posix_remote_output_command(remote_command))
+    }
+
+    fn wait_for_output(&self, child: Child) -> io::Result<Output> {
+        match self.output_limit {
+            Some(limit) => {
+                wait_with_bounded_output(child, NONINTERACTIVE_SSH_COMMAND_TIMEOUT, limit)
+            }
+            None => wait_with_output_timeout(child, NONINTERACTIVE_SSH_COMMAND_TIMEOUT),
+        }
     }
 
     fn shell_output(&self, platform: &RemotePlatform, remote_command: &str) -> io::Result<Output> {
@@ -1077,6 +1263,83 @@ fn output_with_forwarded_stderr(mut child: Child, stdin: Option<&[u8]>) -> io::R
     write_result?;
     output.stderr = stderr_result?;
     Ok(output)
+}
+
+fn read_bounded_output(reader: impl io::Read, limit: usize) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "remote setup command exceeded the output limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn wait_with_bounded_output(
+    mut child: Child,
+    timeout: Duration,
+    limit: usize,
+) -> io::Result<Output> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("SSH command stdout was not captured"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("SSH command stderr was not captured"))?;
+    let (sender, receiver) = mpsc::channel();
+    let stdout_sender = sender.clone();
+    thread::spawn(move || {
+        let _ = stdout_sender.send((true, read_bounded_output(stdout, limit)));
+    });
+    thread::spawn(move || {
+        let _ = sender.send((
+            false,
+            read_bounded_output(stderr, NONINTERACTIVE_SSH_STDERR_LIMIT),
+        ));
+    });
+    let result = (|| {
+        let deadline = Instant::now() + timeout;
+        let mut stdout = None;
+        let mut stderr = None;
+        let mut status = None;
+        loop {
+            while let Ok((is_stdout, bytes)) = receiver.try_recv() {
+                if is_stdout {
+                    stdout = Some(bytes?);
+                } else {
+                    stderr = Some(bytes?);
+                }
+            }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
+            if let (Some(status), Some(stdout), Some(stderr)) =
+                (status, stdout.as_mut(), stderr.as_mut())
+            {
+                return Ok(Output {
+                    status,
+                    stdout: std::mem::take(stdout),
+                    stderr: std::mem::take(stderr),
+                });
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "remote setup command timed out",
+                ));
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
 }
 
 fn normalize_remote_output(mut output: Output) -> io::Result<Output> {
@@ -2765,6 +3028,7 @@ pub(super) struct SshStdioBridge {
     socket_identity: crate::ipc::SocketFileIdentity,
     should_stop: Arc<AtomicBool>,
     failure_rx: mpsc::Receiver<io::Error>,
+    policy: super::RemoteAttachPolicy,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -2777,19 +3041,39 @@ impl SshStdioBridge {
         ssh_options: Option<&ManagedSshOptions>,
         noninteractive: bool,
     ) -> io::Result<Self> {
-        Self::start_command(
+        Self::start_with_policy(
             target,
-            if noninteractive && remote_herdr.bridge_idle_timeout {
-                remote_herdr
-                    .executable
-                    .bridge_command_with_idle_timeout(&session_name, true)
-            } else {
-                remote_herdr.executable.bridge_command(&session_name)
-            },
+            remote_herdr,
+            local_socket,
+            session_name,
+            ssh_options,
+            noninteractive,
+            super::RemoteAttachPolicy::StartIfMissing,
+        )
+    }
+
+    pub(super) fn start_with_policy(
+        target: String,
+        remote_herdr: RemoteHerdr,
+        local_socket: PathBuf,
+        session_name: String,
+        ssh_options: Option<&ManagedSshOptions>,
+        noninteractive: bool,
+        policy: super::RemoteAttachPolicy,
+    ) -> io::Result<Self> {
+        let mut bridge = Self::start_command(
+            target,
+            remote_herdr.executable.bridge_command_with_policy(
+                &session_name,
+                noninteractive && remote_herdr.bridge_idle_timeout,
+                policy,
+            ),
             local_socket,
             ssh_options,
             noninteractive,
-        )
+        )?;
+        bridge.policy = policy;
+        Ok(bridge)
     }
 
     pub(super) fn start_command(
@@ -2870,6 +3154,7 @@ impl SshStdioBridge {
             socket_identity,
             should_stop,
             failure_rx,
+            policy: super::RemoteAttachPolicy::StartIfMissing,
             thread: Some(thread),
         })
     }
@@ -2878,7 +3163,28 @@ impl SshStdioBridge {
         self.failure_rx
             .recv_timeout(BRIDGE_FAILURE_REPORT_TIMEOUT)
             .ok()
+            .map(|error| bridge_policy_error(error, self.policy))
     }
+}
+
+fn bridge_policy_error(error: io::Error, policy: super::RemoteAttachPolicy) -> io::Error {
+    if policy == super::RemoteAttachPolicy::ExistingOnly {
+        let message = error.to_string();
+        if message.contains("unsupported remote client bridge option")
+            || (message.contains("--existing-only-v1")
+                && [
+                    "unexpected argument",
+                    "unrecognized option",
+                    "unknown option",
+                ]
+                .iter()
+                .any(|diagnostic| message.contains(diagnostic)))
+        {
+            return io::Error::new(io::ErrorKind::Unsupported,
+                format!("peer Herdr does not support existing-session-only attachment; update Herdr on the peer and retry: {error}"));
+        }
+    }
+    error
 }
 
 fn prepare_remote_bridge_stream(
@@ -3461,6 +3767,158 @@ mod tests {
     use super::*;
 
     #[test]
+    fn existing_only_bridge_command_combines_idle_timeout_without_changing_startup_policy() {
+        let executable = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        })
+        .executable;
+        for idle in [false, true] {
+            let command = executable.bridge_command_with_policy(
+                "agents",
+                idle,
+                super::super::RemoteAttachPolicy::ExistingOnly,
+            );
+            assert!(command.ends_with("--existing-only-v1"));
+            assert_eq!(command.contains("--idle-timeout-v1"), idle);
+            assert!(command.contains("--session agents remote-client-bridge"));
+        }
+        assert!(!executable
+            .bridge_command_with_policy(
+                "agents",
+                true,
+                super::super::RemoteAttachPolicy::StartIfMissing
+            )
+            .contains("--existing-only-v1"));
+        let windows = RemoteExecutable::WindowsPath("herdr.exe".into());
+        let script = decode_windows_command(&windows.bridge_command_with_policy(
+            "agents",
+            true,
+            super::super::RemoteAttachPolicy::ExistingOnly,
+        ));
+        assert!(script.contains("--existing-only-v1"));
+        assert!(script.contains("--idle-timeout-v1"));
+    }
+
+    #[test]
+    fn existing_only_unsupported_option_reports_peer_upgrade_but_preserves_other_errors() {
+        use super::super::RemoteAttachPolicy;
+        let error = bridge_policy_error(
+            io::Error::other(
+                "remote SSH connection failed: unsupported remote client bridge option",
+            ),
+            RemoteAttachPolicy::ExistingOnly,
+        );
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("update Herdr on the peer"));
+        for message in [
+            "remote Herdr session is stopped",
+            "Permission denied (publickey)",
+            "SSH host key verification failed",
+        ] {
+            let error = bridge_policy_error(
+                io::Error::new(io::ErrorKind::ConnectionAborted, message),
+                RemoteAttachPolicy::ExistingOnly,
+            );
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+            assert_eq!(error.to_string(), message);
+        }
+        let message = "unsupported remote client bridge option";
+        assert_eq!(
+            bridge_policy_error(
+                io::Error::other(message),
+                RemoteAttachPolicy::StartIfMissing
+            )
+            .to_string(),
+            message
+        );
+    }
+
+    #[test]
+    fn fleet_create_rejects_stopped_and_running_session_names() {
+        let sessions = parse_remote_sessions(
+            br#"{"sessions":[{"name":"work","running":false},{"name":"agents","running":true}]}"#,
+        )
+        .unwrap();
+        for name in ["work", "agents"] {
+            assert_eq!(
+                ensure_session_absent(&sessions, name).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+        }
+        assert!(ensure_session_absent(&sessions, "new-session").is_ok());
+    }
+
+    #[test]
+    fn fleet_session_discovery_rejects_invalid_and_oversized_data() {
+        for bytes in [
+            b"not json".as_slice(),
+            br#"{"sessions":[{"name":"../bad","running":true}]}"#,
+            br#"{"sessions":[{"name":"work"}]}"#,
+        ] {
+            assert!(parse_remote_sessions(bytes).is_err());
+        }
+        assert!(parse_remote_sessions(&vec![b' '; SESSION_DISCOVERY_OUTPUT_LIMIT + 1]).is_err());
+        let sessions = (0..=SESSION_DISCOVERY_COUNT_LIMIT)
+            .map(|index| serde_json::json!({"name": format!("s{index}"), "running": false}))
+            .collect::<Vec<_>>();
+        assert!(parse_remote_sessions(
+            &serde_json::to_vec(&serde_json::json!({"sessions": sessions})).unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fleet_setup_capture_enforces_byte_limit() {
+        assert_eq!(
+            read_bounded_output(io::Cursor::new(b"1234"), 4).unwrap(),
+            b"1234"
+        );
+        assert_eq!(
+            read_bounded_output(io::Cursor::new(b"12345"), 4)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fleet_setup_capture_stops_at_the_deadline() {
+        let child = Command::new("sh")
+            .args(["-c", "exec sleep 10"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        assert_eq!(
+            wait_with_bounded_output(child, Duration::from_millis(25), 64)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fleet_setup_capture_rejects_excess_child_output() {
+        let child = Command::new("sh")
+            .args(["-c", "printf 12345"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        assert_eq!(
+            wait_with_bounded_output(child, Duration::from_secs(1), 4)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
     fn remote_client_preferences_cross_process_handoff() {
         let root =
             std::env::temp_dir().join(format!("herdr-preference-handoff-{}", std::process::id()));
@@ -3994,6 +4452,7 @@ mod tests {
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: Some(managed_config),
             noninteractive: false,
+            output_limit: None,
         };
 
         let command = ssh.command();
@@ -4065,6 +4524,7 @@ mod tests {
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: Some(managed_config),
             noninteractive: false,
+            output_limit: None,
         };
         let args = ssh
             .command()
@@ -4144,6 +4604,7 @@ mod tests {
             session_name: "probe-options".into(),
             managed_config: Some(managed_config),
             noninteractive: false,
+            output_limit: None,
         };
         let remote = RemoteHerdr::for_platform(RemotePlatform {
             os: "linux",
@@ -4275,6 +4736,7 @@ mod tests {
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: None,
             noninteractive: false,
+            output_limit: None,
         };
 
         let command = ssh.command();

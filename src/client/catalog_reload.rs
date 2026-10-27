@@ -92,6 +92,53 @@ pub(super) fn apply_profiles(
     active_removed
 }
 
+pub(super) fn apply_fleet(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    commands: &mut endpoint_commands::EndpointCommands,
+    supervisors: &mut endpoint::EndpointSupervisors,
+    discovery: fleet::Discovery,
+    now: std::time::Instant,
+) -> Option<bool> {
+    let shell = state.shell.as_mut()?;
+    let fleet = shell.fleet.as_mut()?;
+    if !fleet.apply(discovery) {
+        return None;
+    }
+    let retired = supervisors.reconcile_fleet(&fleet.sessions, now);
+    let active_removed = retired.contains(endpoints.active_id());
+    for endpoint_id in retired {
+        endpoints.disconnect(&endpoint_id);
+        let cancelled = commands.disconnect(&endpoint_id);
+        #[cfg(unix)]
+        state.forget_endpoint_graphics(&endpoint_id);
+        if let Some(shell) = state.shell.as_mut() {
+            for request_id in cancelled {
+                shell.cancel_endpoint_request(&request_id);
+            }
+            shell.retire_endpoint(&endpoint_id);
+        }
+    }
+    if active_removed {
+        endpoints.select_unavailable_local();
+        state.freeze_presentation();
+        if let Some(shell) = state.shell.as_mut() {
+            shell.select_unavailable_local();
+            if let Some(fleet) = shell.fleet.as_mut() {
+                fleet.selected = fleet::Selection {
+                    machine: fleet.config.local_machine.clone(),
+                    session: fleet.config.origin_session.clone(),
+                };
+                fleet.persist();
+            }
+        }
+    }
+    if let Some(shell) = state.shell.as_mut() {
+        shell.refresh_fleet_endpoints();
+    }
+    Some(active_removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +160,63 @@ mod tests {
 
     fn state() -> ClientState {
         ClientState::test_new()
+    }
+
+    #[test]
+    fn fleet_active_session_retirement_requests_origin_recovery() {
+        let now = Instant::now();
+        let mut state = state();
+        let mut fleet = fleet::State::isolated(fleet::tests::config());
+        let discovery = |epoch, sessions| fleet::Discovery {
+            machine: "lumi".into(),
+            epoch,
+            result: Ok(sessions),
+        };
+        fleet.apply(discovery(
+            1,
+            vec![fleet::DiscoveredSession {
+                name: "skadi".into(),
+                running: true,
+            }],
+        ));
+        let remote = fleet.config.endpoint_id("lumi", "skadi");
+        let mut supervisors = EndpointSupervisors::new(&[], now);
+        supervisors.reconcile_fleet(&fleet.sessions, now);
+        state.shell.as_mut().unwrap().set_fleet(fleet);
+        let mut endpoints = EndpointRegistry::new(
+            Transport(Arc::new(AtomicUsize::new(0))),
+            1,
+            Default::default(),
+        );
+        endpoints.insert(
+            remote.clone(),
+            Transport(Arc::new(AtomicUsize::new(0))),
+            2,
+            Default::default(),
+            true,
+        );
+        endpoints.set_active(&remote);
+        endpoints.unfreeze_input();
+        let mut commands = endpoint_commands::EndpointCommands::default();
+        assert_eq!(
+            apply_fleet(
+                &mut state,
+                &mut endpoints,
+                &mut commands,
+                &mut supervisors,
+                discovery(2, Vec::new()),
+                now
+            ),
+            Some(true)
+        );
+        assert_eq!(endpoints.active_id(), &ClientEndpointId::Local);
+        assert!(endpoints.connection(&ClientEndpointId::Local).is_some());
+        assert!(endpoints.connection(&remote).is_none());
+        let shell = state.shell.as_mut().unwrap();
+        let fleet = shell.fleet.as_ref().unwrap();
+        assert_eq!(fleet.selected.machine, "khion");
+        assert_eq!(fleet.selected.session, "skadi");
+        assert!(shell.compose(120, 40).is_some());
     }
 
     #[test]

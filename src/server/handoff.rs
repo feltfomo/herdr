@@ -85,6 +85,9 @@ pub(crate) fn spawn_handoff_import(
     };
     let mut command = Command::new(exe);
     command
+        .env_remove("HERDR_FLEET_CONFIG")
+        .env_remove(crate::config::CLIENT_STATE_DIR_ENV_VAR);
+    command
         .arg("server")
         .arg("--handoff-import")
         .arg(socket_path)

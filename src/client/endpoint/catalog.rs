@@ -207,6 +207,7 @@ impl EndpointCatalog {
                 true
             }
             super::ClientEndpointId::Ssh(profile_id) => self.select_ssh(profile_id),
+            super::ClientEndpointId::Session(_) => false,
         }
     }
 
@@ -371,15 +372,11 @@ pub(super) fn store_private_json(
 }
 
 pub(crate) fn catalog_path() -> PathBuf {
-    crate::config::state_dir()
-        .join("client")
-        .join("endpoints.json")
+    crate::config::client_state_dir().join("endpoints.json")
 }
 
 fn selection_path() -> PathBuf {
-    crate::config::state_dir()
-        .join("client")
-        .join("endpoint-selection.json")
+    crate::config::client_state_dir().join("endpoint-selection.json")
 }
 
 #[cfg(test)]
@@ -393,6 +390,119 @@ mod tests {
                 std::process::id()
             ))
             .join("endpoints.json")
+    }
+
+    #[test]
+    fn client_state_override_isolates_machines_selection_and_metadata() {
+        use crate::client::endpoint::{SshMachineMetadata, SshMetadataCache};
+        use crate::config::CLIENT_STATE_DIR_ENV_VAR;
+
+        let _lock = crate::config::test_config_env_lock().lock().unwrap();
+        struct RestoreEnv([(&'static str, Option<std::ffi::OsString>); 2]);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (name, previous) in &self.0 {
+                    match previous {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnv([
+            (
+                CLIENT_STATE_DIR_ENV_VAR,
+                std::env::var_os(CLIENT_STATE_DIR_ENV_VAR),
+            ),
+            ("XDG_STATE_HOME", std::env::var_os("XDG_STATE_HOME")),
+        ]);
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".runtime/client-state-tests")
+            .join(format!("{}-{unique}", std::process::id()));
+        std::env::set_var("XDG_STATE_HOME", root.join("ordinary"));
+        std::env::remove_var(CLIENT_STATE_DIR_ENV_VAR);
+        let ordinary_client = crate::config::state_dir().join("client");
+        assert_eq!(catalog_path(), ordinary_client.join("endpoints.json"));
+        assert_eq!(
+            selection_path(),
+            ordinary_client.join("endpoint-selection.json")
+        );
+        let state_before = crate::config::state_dir();
+        let config_before = crate::config::config_dir();
+        let runtime_before = crate::session::data_dir();
+        let socket_before = crate::session::active_api_socket_path();
+        let mut ordinary = EndpointCatalog::default();
+        let ordinary_id = ordinary.add_ssh("Ordinary", "ordinary", "default").unwrap();
+        assert!(ordinary.select_ssh(&ordinary_id));
+        ordinary.store_profiles().unwrap();
+        ordinary.store_selection().unwrap();
+
+        let metadata_id = "0123456789abcdef0123456789abcdef";
+        let first_root = root.join("connected-one");
+        std::env::set_var(CLIENT_STATE_DIR_ENV_VAR, &first_root);
+        assert_eq!(catalog_path(), first_root.join("endpoints.json"));
+        assert_eq!(selection_path(), first_root.join("endpoint-selection.json"));
+        let mut first = EndpointCatalog::load().unwrap();
+        assert!(first.ssh.is_empty());
+        assert!(first.selected_profile.is_none());
+        let first_id = first.add_ssh("First", "first", "work").unwrap();
+        assert!(first.select_ssh(&first_id));
+        first.store_profiles().unwrap();
+        first.store_selection().unwrap();
+        let first_metadata = SshMachineMetadata {
+            os: "linux".into(),
+            executable: "/first/herdr".into(),
+        };
+        SshMetadataCache::new(metadata_id, "same-target", "work")
+            .unwrap()
+            .store(&first_metadata);
+
+        assert_eq!(crate::config::state_dir(), state_before);
+        assert_eq!(crate::config::config_dir(), config_before);
+        assert_eq!(crate::session::data_dir(), runtime_before);
+        assert_eq!(crate::session::active_api_socket_path(), socket_before);
+
+        let second_root = root.join("connected-two");
+        std::env::set_var(CLIENT_STATE_DIR_ENV_VAR, &second_root);
+        assert_eq!(catalog_path(), second_root.join("endpoints.json"));
+        let mut second = EndpointCatalog::load().unwrap();
+        assert!(second.ssh.is_empty());
+        assert!(second.selected_profile.is_none());
+        let second_metadata = SshMetadataCache::new(metadata_id, "same-target", "work").unwrap();
+        assert!(second_metadata.load().is_none());
+        let second_id = second.add_ssh("Second", "second", "other").unwrap();
+        assert!(second.select_ssh(&second_id));
+        second.store_profiles().unwrap();
+        second.store_selection().unwrap();
+        second_metadata.store(&SshMachineMetadata {
+            os: "linux".into(),
+            executable: "/second/herdr".into(),
+        });
+
+        std::env::set_var(CLIENT_STATE_DIR_ENV_VAR, &first_root);
+        assert_eq!(EndpointCatalog::load().unwrap(), first);
+        assert_eq!(EndpointCatalog::load_profiles().unwrap(), first.ssh);
+        assert_eq!(
+            SshMetadataCache::new(metadata_id, "same-target", "work")
+                .unwrap()
+                .load(),
+            Some(first_metadata)
+        );
+        std::env::set_var(CLIENT_STATE_DIR_ENV_VAR, &second_root);
+        assert_eq!(EndpointCatalog::load().unwrap(), second);
+        std::env::remove_var(CLIENT_STATE_DIR_ENV_VAR);
+        assert_eq!(EndpointCatalog::load().unwrap(), ordinary);
+        std::env::set_var(CLIENT_STATE_DIR_ENV_VAR, "");
+        assert_eq!(crate::config::client_state_dir(), ordinary_client);
+        assert_eq!(EndpointCatalog::load().unwrap(), ordinary);
+        assert_eq!(crate::config::state_dir(), state_before);
+        assert_eq!(crate::config::config_dir(), config_before);
+        assert_eq!(crate::session::data_dir(), runtime_before);
+        assert_eq!(crate::session::active_api_socket_path(), socket_before);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
+use super::{model::LoadedConfig, Config, CLIENT_STATE_DIR_ENV_VAR, CONFIG_PATH_ENV_VAR};
 
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
@@ -39,6 +39,14 @@ pub fn state_dir() -> PathBuf {
         return PathBuf::from(dir).join(app_dir_name());
     }
     platform_state_dir()
+}
+
+// explicit connected clients keep their machine metadata out of ordinary windows.
+pub fn client_state_dir() -> PathBuf {
+    std::env::var_os(CLIENT_STATE_DIR_ENV_VAR)
+        .filter(|directory| !directory.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state_dir().join("client"))
 }
 
 #[cfg(windows)]

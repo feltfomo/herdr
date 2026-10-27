@@ -23,6 +23,7 @@ pub(crate) mod endpoint;
 mod endpoint_commands;
 mod errors;
 mod events;
+mod fleet;
 mod frame_output;
 #[cfg(test)]
 mod frame_output_tests;
@@ -172,6 +173,10 @@ fn negotiated_surface_decoder(
     (reuse || delta || scroll).then(|| protocol::surface_reuse::Decoder::new(delta, scroll))
 }
 
+pub(crate) fn validate_fleet_configuration() -> io::Result<()> {
+    fleet::Config::load().map(|_| ()).map_err(io::Error::other)
+}
+
 fn run_client_with_mode(
     attach_request: Option<(String, bool)>,
     attach_escape: Option<AttachEscapeState>,
@@ -194,12 +199,23 @@ fn run_client_with_mode(
         } else {
             crate::config::config_diagnostic_summary(&loaded_config.diagnostics)
         };
+    let fleet_config = if client_rendered_shell {
+        fleet::Config::load().map_err(io::Error::other)?
+    } else {
+        None
+    };
     let shell_config = client_rendered_shell.then(|| {
-        shell::ClientShellConfig::from_config(&loaded_config.config)
+        let config = shell::ClientShellConfig::from_config(&loaded_config.config)
             .with_startup_config_diagnostic(startup_config_diagnostic)
             .with_startup_onboarding(loaded_config.config.should_show_onboarding())
-            .with_keybinding_source(keybinding_source)
-            .with_process_endpoint_preferences(&socket_path)
+            .with_keybinding_source(keybinding_source);
+        if fleet_config.is_some() {
+            config.with_fleet_preferences_path(
+                crate::config::client_state_dir().join("fleet-chrome.json"),
+            )
+        } else {
+            config.with_process_endpoint_preferences(&socket_path)
+        }
     });
     let mouse_capture = loaded_config.config.ui.mouse_capture;
     let mouse_scroll_lines = loaded_config.config.ui.mouse_scroll_lines();
@@ -213,6 +229,7 @@ fn run_client_with_mode(
         .as_ref()
         .is_some_and(shell::ClientShellConfig::uses_endpoint_keybindings);
     let mut loop_config = ClientLoopConfig {
+        fleet_config: fleet_config.clone(),
         sound_config: loaded_config.config.ui.sound,
         mouse_scroll_lines,
         redraw_on_focus_gained,
@@ -240,7 +257,7 @@ fn run_client_with_mode(
     } else {
         endpoint::EndpointCatalog::default()
     };
-    let federated = endpoint_catalog.has_enabled_ssh();
+    let federated = fleet_config.is_some() || endpoint_catalog.has_enabled_ssh();
 
     let initial_stream = match crate::ipc::connect_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
@@ -403,11 +420,8 @@ fn run_client_with_mode(
 
 // This guards server-supplied paths only. Client-owned temporary files generated
 // from received graphics bytes remain usable for remote endpoints.
-fn server_graphics_files_allowed(
-    endpoint_id: &endpoint::ClientEndpointId,
-    remote_client_process: bool,
-) -> bool {
-    endpoint_id.is_local() && !remote_client_process
+fn server_graphics_files_allowed(shared_filesystem: bool, remote_client_process: bool) -> bool {
+    shared_filesystem && !remote_client_process
 }
 
 #[cfg(unix)]
@@ -448,6 +462,7 @@ async fn run_client_loop(
 ) -> Result<(), ClientError> {
     #[cfg(windows)]
     let _ = config.mouse_scroll_lines;
+    let fleet_config = config.fleet_config.take();
     let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
     let is_remote_client = is_remote_client_process();
     let local_unavailable = initial.is_none();
@@ -492,12 +507,16 @@ async fn run_client_loop(
         detached_process_children: Vec::new(),
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
-    let mut federated = endpoint_catalog.has_enabled_ssh();
+    let mut federated = fleet_config.is_some() || endpoint_catalog.has_enabled_ssh();
     if let Some(shell) = state.shell.as_mut() {
         shell.set_host_reports_key_releases(config.host_escape_disambiguation_active);
         shell.set_host_erase_byte(crate::platform::terminal_erase_byte());
         shell.set_graphics_cell_size(initial_cell_width_px, initial_cell_height_px);
-        shell.set_endpoint_catalog(&endpoint_catalog.ssh);
+        if let Some(config) = fleet_config.clone() {
+            shell.set_fleet(fleet::State::new(config));
+        } else {
+            shell.set_endpoint_catalog(&endpoint_catalog.ssh);
+        }
         shell.set_endpoint_methods_for(
             &endpoint::ClientEndpointId::Local,
             initial
@@ -620,7 +639,8 @@ async fn run_client_loop(
         let negotiation = endpoint::EndpointNegotiation::new(
             handshake.endpoint_methods.unwrap_or_default(),
             handshake.endpoint_capabilities.unwrap_or_default(),
-        );
+        )
+        .with_shared_filesystem(!is_remote_client);
         let surface_decoder = negotiated_surface_decoder(&negotiation);
         let transport = start_endpoint_transport(
             stream,
@@ -639,8 +659,14 @@ async fn run_client_loop(
     } else {
         endpoint::EndpointRegistry::empty()
     };
-    let mut supervisors =
-        endpoint::EndpointSupervisors::new(&endpoint_catalog.ssh, std::time::Instant::now());
+    let mut supervisors = endpoint::EndpointSupervisors::new(
+        if fleet_config.is_some() {
+            &[]
+        } else {
+            &endpoint_catalog.ssh
+        },
+        std::time::Instant::now(),
+    );
     if federated {
         supervisors.add_local(
             client_socket_path(),
@@ -663,7 +689,10 @@ async fn run_client_loop(
     let mut pending_activation: Option<endpoint::PendingEndpointActivation> = None;
     let mut scheduled_activation = None;
     let mut pending_catalog: Option<Result<Vec<endpoint::SavedSshEndpoint>, String>> = None;
-    if state.shell.is_some() && !is_remote_client && state.attach_escape.is_none() {
+    let mut pending_fleet = std::collections::BTreeMap::new();
+    if let Some(config) = fleet_config.clone() {
+        fleet::start(&config, event_tx.clone(), should_quit.clone());
+    } else if state.shell.is_some() && !is_remote_client && state.attach_escape.is_none() {
         catalog_reload::watch_profiles(event_tx.clone(), should_quit.clone());
     }
 
@@ -677,7 +706,23 @@ async fn run_client_loop(
     let mut stdin_open = true;
     while !should_quit.load(Ordering::Acquire) {
         if pending_activation.is_none() {
+            let mut topology_changed = false;
+            let mut recover_local = false;
+            for (_, discovery) in std::mem::take(&mut pending_fleet) {
+                if let Some(active_removed) = catalog_reload::apply_fleet(
+                    &mut state,
+                    &mut write_stream,
+                    &mut endpoint_commands,
+                    &mut supervisors,
+                    discovery,
+                    std::time::Instant::now(),
+                ) {
+                    topology_changed = true;
+                    recover_local |= active_removed;
+                }
+            }
             if let Some(reload) = pending_catalog.take() {
+                topology_changed = true;
                 match reload {
                     Ok(profiles) => {
                         let now = std::time::Instant::now();
@@ -714,33 +759,7 @@ async fn run_client_loop(
                             profiles,
                             now,
                         );
-                        if active_removed {
-                            clear_endpoint_host_effects(
-                                &mut state,
-                                &host_mouse_capture_active,
-                                &host_sgr_pixels_active,
-                            );
-                            scheduled_activation = None;
-                            if state.shell.as_ref().is_some_and(|shell| {
-                                shell.endpoint_projection_available(
-                                    &endpoint::ClientEndpointId::Local,
-                                )
-                            }) && write_stream
-                                .connection(&endpoint::ClientEndpointId::Local)
-                                .is_some()
-                            {
-                                scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
-                                    endpoint_id: endpoint::ClientEndpointId::Local,
-                                    target: None,
-                                    force: true,
-                                });
-                            } else {
-                                present_handoff_unavailable(
-                                    &mut state,
-                                    "Local is unavailable; reconnecting".into(),
-                                );
-                            }
-                        }
+                        recover_local |= active_removed;
                     }
                     Err(error) => {
                         warn!(%error, "saved machines could not be reloaded; keeping current connections");
@@ -751,6 +770,33 @@ async fn run_client_loop(
                         }
                     }
                 }
+            }
+            if recover_local {
+                clear_endpoint_host_effects(
+                    &mut state,
+                    &host_mouse_capture_active,
+                    &host_sgr_pixels_active,
+                );
+                scheduled_activation = None;
+                if state.shell.as_ref().is_some_and(|shell| {
+                    shell.endpoint_projection_available(&endpoint::ClientEndpointId::Local)
+                }) && write_stream
+                    .connection(&endpoint::ClientEndpointId::Local)
+                    .is_some()
+                {
+                    scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
+                        endpoint_id: endpoint::ClientEndpointId::Local,
+                        target: None,
+                        force: true,
+                    });
+                } else {
+                    present_handoff_unavailable(
+                        &mut state,
+                        "Local is unavailable; reconnecting".into(),
+                    );
+                }
+            }
+            if topology_changed {
                 apply_client_shell_input_source_changes(&mut state, &mut prefix_input_source);
                 if let Some(shell) = state.shell.as_mut() {
                     let cleanup = shell.take_pending_graphics_cleanup();
@@ -765,6 +811,7 @@ async fn run_client_loop(
                 }
             }
         }
+
         if let Some(shell) = state.shell.as_ref() {
             supervisors.spawn_due(
                 std::time::Instant::now(),
@@ -825,6 +872,9 @@ async fn run_client_loop(
 
         match event {
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
+            ClientLoopEvent::FleetDiscovery(discovery) => {
+                pending_fleet.insert(discovery.machine.clone(), discovery);
+            }
             #[cfg(unix)]
             ClientLoopEvent::StdinInput(data) => {
                 let image_bridge_active = endpoint_accepts_local_images(
@@ -1405,11 +1455,18 @@ async fn run_client_loop(
                 target,
                 force,
             } => {
-                if !endpoint_catalog.select_endpoint(&endpoint_id) {
-                    continue;
-                }
-                if let Err(error) = endpoint_catalog.store_selection() {
-                    warn!(%error, "failed to persist desired endpoint selection");
+                if let Some(fleet) = state.shell.as_mut().and_then(|shell| shell.fleet.as_mut()) {
+                    if !fleet.sessions.contains_key(&endpoint_id) {
+                        continue;
+                    }
+                    fleet.select(&endpoint_id);
+                } else {
+                    if !endpoint_catalog.select_endpoint(&endpoint_id) {
+                        continue;
+                    }
+                    if let Err(error) = endpoint_catalog.store_selection() {
+                        warn!(%error, "failed to persist desired endpoint selection");
+                    }
                 }
                 begin_endpoint_activation(
                     &mut state,
@@ -1635,8 +1692,14 @@ async fn run_client_loop(
                     } => {
                         // Never interpret an SSH server's filesystem path on this host,
                         // including legacy peers that send files without negotiation.
-                        if !server_graphics_files_allowed(&endpoint_id, is_remote_client_process())
-                        {
+                        if !server_graphics_files_allowed(
+                            write_stream
+                                .connection(&endpoint_id)
+                                .is_some_and(|connection| {
+                                    connection.negotiation.shares_filesystem()
+                                }),
+                            is_remote_client_process(),
+                        ) {
                             write_stream.send_to(
                                 &endpoint_id,
                                 &ClientMessage::GraphicsTransmissionResult {
@@ -2185,11 +2248,22 @@ async fn run_client_loop(
                                 continue;
                             }
                         }
-                        let selected_endpoint = endpoint_catalog
-                            .selected_profile
+                        let selected_endpoint = state
+                            .shell
                             .as_ref()
-                            .map_or(endpoint::ClientEndpointId::Local, |profile_id| {
-                                endpoint::ClientEndpointId::Ssh(profile_id.clone())
+                            .and_then(|shell| shell.fleet.as_ref())
+                            .map(|fleet| {
+                                fleet
+                                    .config
+                                    .endpoint_id(&fleet.selected.machine, &fleet.selected.session)
+                            })
+                            .unwrap_or_else(|| {
+                                endpoint_catalog.selected_profile.as_ref().map_or(
+                                    endpoint::ClientEndpointId::Local,
+                                    |profile_id| {
+                                        endpoint::ClientEndpointId::Ssh(profile_id.clone())
+                                    },
+                                )
                             });
                         let activation_ready = state.shell.as_ref().is_some_and(|shell| {
                             shell.endpoint_has_snapshot(&selected_endpoint)
