@@ -197,6 +197,7 @@ impl ClientShellState {
             selected: None,
             scroll: 0,
             filter: None,
+            mode: ClientNavigatorMode::Tree,
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, &navigator);
@@ -221,6 +222,7 @@ impl ClientShellState {
             super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
         let next =
             (selected as isize + delta).clamp(0, rows.len().saturating_sub(1) as isize) as usize;
+        let next = super::pickers::selectable_row(&rows, next, delta >= 0).unwrap_or(next);
         navigator.selected = Some(rows[next].target.clone());
     }
 
@@ -236,6 +238,7 @@ impl ClientShellState {
             super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
         // Keep the selection in the dragged viewport so rendering does not snap back to it.
         let selected = selected.clamp(navigator.scroll, navigator.scroll + viewport_rows - 1);
+        let selected = super::pickers::selectable_row(&rows, selected, true).unwrap_or(selected);
         navigator.selected = rows.get(selected).map(|row| row.target.clone());
     }
 
@@ -308,6 +311,7 @@ impl ClientShellState {
                 ClientEndpointFocusTarget::Pane(pane_id),
                 outcome,
             ),
+            ClientNavigatorTarget::RoleGroup { .. } => false,
         };
         if activated {
             self.overlay = None;
@@ -632,6 +636,20 @@ impl ClientShellState {
         if self.route_worktree_overlay_key(key, outcome) {
             return;
         }
+        if matches!(
+            self.overlay,
+            Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
+                mode: ClientNavigatorMode::Roles { .. },
+                ..
+            }))
+        ) {
+            self.route_role_picker_key(key, outcome);
+            return;
+        }
+        if matches!(self.overlay, Some(ClientShellOverlay::SessionPicker(_))) {
+            self.route_session_picker_key(key, outcome);
+            return;
+        }
         if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
             let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
             let search_focused = matches!(
@@ -906,6 +924,14 @@ impl ClientShellState {
             self.save_rename_overlay(outcome);
             return;
         }
+        if matches!(rename.target, ClientRenameTarget::NewSession { .. })
+            && (key.code == KeyCode::Tab && key.modifiers.is_empty()
+                || key.code == KeyCode::BackTab)
+        {
+            self.cycle_new_session_machine(key.code == KeyCode::Tab);
+            outcome.repaint = true;
+            return;
+        }
         if key.code == KeyCode::Esc {
             self.overlay = None;
             outcome.repaint = true;
@@ -935,6 +961,16 @@ impl ClientShellState {
     }
 
     pub(super) fn save_rename_overlay(&mut self, outcome: &mut ClientShellInput) {
+        if matches!(
+            self.overlay,
+            Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+                target: ClientRenameTarget::NewSession { .. },
+                ..
+            }))
+        ) {
+            self.save_new_session_prompt(outcome);
+            return;
+        }
         let Some(ClientShellOverlay::Rename(rename)) = self.overlay.take() else {
             return;
         };
@@ -1004,6 +1040,8 @@ impl ClientShellState {
                     label: Some(trimmed.to_owned()),
                 },
             )),
+            // Routed to save_new_session_prompt above; it never reaches an endpoint.
+            ClientRenameTarget::NewSession { .. } => None,
         };
         if let Some(method) = method {
             self.push_endpoint_method(method, outcome);

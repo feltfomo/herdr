@@ -475,16 +475,65 @@ impl Default for SpacesSidebarConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SidebarConfig {
     pub agents: AgentsSidebarConfig,
     pub spaces: SpacesSidebarConfig,
+    /// Draw labelled borders around sidebar sections. Default: true.
+    pub panel_borders: bool,
+    /// Agent entries in machine-grouped sidebars. Default: detailed.
+    pub agent_detail: AgentDetailConfig,
+    /// Show an agent's directory when it differs from its space root. Default: true.
+    pub show_agent_path: bool,
+    /// Role groups in the agent role picker, in display order. Agents reporting another
+    /// `$role` value get a group after these; agents with none are listed as unassigned.
+    pub roles: Vec<String>,
+}
+
+impl Default for SidebarConfig {
+    fn default() -> Self {
+        Self {
+            agents: AgentsSidebarConfig::default(),
+            spaces: SpacesSidebarConfig::default(),
+            panel_borders: true,
+            agent_detail: AgentDetailConfig::Detailed,
+            show_agent_path: true,
+            roles: ["orchestrator", "architect", "implementer"]
+                .map(String::from)
+                .to_vec(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDetailConfig {
+    /// One line per agent.
+    Compact,
+    /// A second line with directory, `$model` and `$role`.
+    #[default]
+    Detailed,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidebar_look_keys_parse_without_resetting_row_layouts() {
+        let config: SidebarConfig = toml::from_str(
+            "panel_borders = false\nagent_detail = 'compact'\nshow_agent_path = false\nroles = ['lead']\n[agents]\nrow_gap = 1\n",
+        )
+        .unwrap();
+        assert!(!config.panel_borders);
+        assert_eq!(config.agent_detail, AgentDetailConfig::Compact);
+        assert!(!config.show_agent_path);
+        assert_eq!(config.roles, vec!["lead".to_string()]);
+        assert_eq!(config.agents.row_gap, 1);
+        assert_eq!(config.spaces, SpacesSidebarConfig::default());
+        assert!(toml::from_str::<SidebarConfig>("agent_detail = 'verbose'").is_err());
+    }
 
     #[test]
     fn defaults_match_the_compact_agent_and_existing_space_layouts() {

@@ -173,6 +173,14 @@ fn negotiated_surface_decoder(
     (reuse || delta || scroll).then(|| protocol::surface_reuse::Decoder::new(delta, scroll))
 }
 
+/// How the client loop ended, decided where the loop still owns the terminal and acted on only
+/// after the terminal is restored.
+enum ClientExit {
+    Detached,
+    /// Replace this window with one scoped to another session.
+    Launch(fleet::launch::LaunchRequest),
+}
+
 pub(crate) fn validate_fleet_configuration() -> io::Result<()> {
     fleet::Config::load().map(|_| ()).map_err(io::Error::other)
 }
@@ -393,29 +401,35 @@ fn run_client_with_mode(
     // Restore the terminal before printing any final status message.
     let terminal_restore_failed = terminal_guard.restore().is_err();
 
-    if let Err(err) = result {
-        let _ = writeln!(io::stderr(), "herdr: {err}");
-        rt.shutdown_timeout(Duration::from_millis(100));
-        crate::logging::shutdown("client");
+    let exit = match result {
+        Ok(exit) => exit,
+        Err(err) => {
+            let _ = writeln!(io::stderr(), "herdr: {err}");
+            rt.shutdown_timeout(Duration::from_millis(100));
+            crate::logging::shutdown("client");
 
-        let detached = matches!(
-            &err,
-            ClientError::ServerShutdown {
-                reason: Some(reason)
-            } if reason == "detached"
-        );
-        let connection_lost_during_terminal_hangup =
-            terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
-        if detached || connection_lost_during_terminal_hangup {
-            return Ok(());
+            let detached = matches!(
+                &err,
+                ClientError::ServerShutdown {
+                    reason: Some(reason)
+                } if reason == "detached"
+            );
+            let connection_lost_during_terminal_hangup =
+                terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
+            if detached || connection_lost_during_terminal_hangup {
+                return Ok(());
+            }
+
+            std::process::exit(1);
         }
-
-        std::process::exit(1);
-    }
+    };
 
     rt.shutdown_timeout(Duration::from_millis(100));
     crate::logging::shutdown("client");
-    Ok(())
+    match exit {
+        ClientExit::Detached => Ok(()),
+        ClientExit::Launch(request) => request.run(),
+    }
 }
 
 // This guards server-supplied paths only. Client-owned temporary files generated
@@ -459,7 +473,7 @@ async fn run_client_loop(
     mut config: ClientLoopConfig,
     attach_escape: Option<AttachEscapeState>,
     _terminal_guard: &TerminalGuard,
-) -> Result<(), ClientError> {
+) -> Result<ClientExit, ClientError> {
     #[cfg(windows)]
     let _ = config.mouse_scroll_lines;
     let fleet_config = config.fleet_config.take();
@@ -946,7 +960,7 @@ async fn run_client_loop(
                             .flatten();
                         (outcome, frame)
                     };
-                    if finish_client_shell_input(
+                    if let Some(exit) = finish_client_shell_input(
                         &mut state,
                         outcome,
                         frame,
@@ -956,7 +970,7 @@ async fn run_client_loop(
                         &mut prefix_input_source,
                         &mut scheduled_activation,
                     )? {
-                        return Ok(());
+                        return Ok(exit);
                     }
                     continue;
                 }
@@ -1000,7 +1014,7 @@ async fn run_client_loop(
                         }
                         AttachInputAction::Detach => {
                             let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
-                            return Ok(());
+                            return Ok(ClientExit::Detached);
                         }
                         AttachInputAction::None => continue,
                     }
@@ -1138,7 +1152,7 @@ async fn run_client_loop(
                             .flatten();
                         (outcome, frame)
                     };
-                    if finish_client_shell_input(
+                    if let Some(exit) = finish_client_shell_input(
                         &mut state,
                         outcome,
                         frame,
@@ -1148,7 +1162,7 @@ async fn run_client_loop(
                         &mut prefix_input_source,
                         &mut scheduled_activation,
                     )? {
-                        return Ok(());
+                        return Ok(exit);
                     }
                     continue;
                 }
@@ -1247,7 +1261,7 @@ async fn run_client_loop(
                             .flatten();
                         (outcome, frame)
                     };
-                    if finish_client_shell_input(
+                    if let Some(exit) = finish_client_shell_input(
                         &mut state,
                         outcome,
                         frame,
@@ -1257,7 +1271,7 @@ async fn run_client_loop(
                         &mut prefix_input_source,
                         &mut scheduled_activation,
                     )? {
-                        return Ok(());
+                        return Ok(exit);
                     }
                     continue;
                 }
@@ -1274,7 +1288,7 @@ async fn run_client_loop(
                         .repaint
                         .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
                         .flatten();
-                    if finish_client_shell_input(
+                    if let Some(exit) = finish_client_shell_input(
                         &mut state,
                         outcome,
                         frame,
@@ -1284,14 +1298,14 @@ async fn run_client_loop(
                         &mut prefix_input_source,
                         &mut scheduled_activation,
                     )? {
-                        return Ok(());
+                        return Ok(exit);
                     }
                 }
             }
             ClientLoopEvent::TerminalUnavailable(err) => {
                 info!(err = %err, "client terminal unavailable; detaching");
                 let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
-                return Ok(());
+                return Ok(ClientExit::Detached);
             }
             ClientLoopEvent::Resize(
                 new_cols,
@@ -2032,7 +2046,7 @@ async fn run_client_loop(
                                     .flatten();
                                 (outcome, frame)
                             };
-                            if finish_client_shell_input(
+                            if let Some(exit) = finish_client_shell_input(
                                 &mut state,
                                 outcome,
                                 frame,
@@ -2042,7 +2056,7 @@ async fn run_client_loop(
                                 &mut prefix_input_source,
                                 &mut scheduled_activation,
                             )? {
-                                return Ok(());
+                                return Ok(exit);
                             }
                         }
                     }
@@ -2412,7 +2426,7 @@ async fn run_client_loop(
                         #[cfg(windows)]
                         &event_tx,
                     );
-                    if finish_client_shell_input(
+                    if let Some(exit) = finish_client_shell_input(
                         &mut state,
                         outcome,
                         frame,
@@ -2422,7 +2436,7 @@ async fn run_client_loop(
                         &mut prefix_input_source,
                         &mut scheduled_activation,
                     )? {
-                        return Ok(());
+                        return Ok(exit);
                     }
                 }
             }
@@ -2434,7 +2448,7 @@ async fn run_client_loop(
     let _ = write_to_server(&mut write_stream, &detach);
     let _ = io::stdout().flush();
 
-    Ok(())
+    Ok(ClientExit::Detached)
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "fleet_sidebar.rs"]
+mod fleet_sidebar;
 #[path = "workspace_navigation.rs"]
 mod workspace_navigation;
 use crate::client::endpoint::{
@@ -2344,6 +2346,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         ClientNavigatorTarget::Machine { .. } => row.depth == 0 && row.status.is_none(),
         ClientNavigatorTarget::Workspace { .. } => row.depth == 1 && row.status.is_none(),
         ClientNavigatorTarget::Pane { .. } => row.depth == 2 && row.status.is_some(),
+        ClientNavigatorTarget::RoleGroup { .. } => false,
     }));
     assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
 
@@ -2353,6 +2356,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
             ClientNavigatorTarget::Machine { .. } => " ",
             ClientNavigatorTarget::Workspace { .. } => "   ",
             ClientNavigatorTarget::Pane { .. } => "   └─ ",
+            ClientNavigatorTarget::RoleGroup { .. } => unreachable!("tree mode has no roles"),
         };
         let prefix = frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
             .iter()
@@ -2391,7 +2395,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
     assert!(rows.iter().all(|row| match row.target {
         ClientNavigatorTarget::Workspace { .. } => row.depth == 0,
         ClientNavigatorTarget::Pane { .. } => row.depth == 1,
-        ClientNavigatorTarget::Machine { .. } => false,
+        ClientNavigatorTarget::Machine { .. } | ClientNavigatorTarget::RoleGroup { .. } => false,
     }));
 }
 
@@ -2422,7 +2426,7 @@ fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
             && row.stale
     }));
     assert!(!rows.iter().any(|row| match &row.target {
-        ClientNavigatorTarget::Machine { .. } => false,
+        ClientNavigatorTarget::Machine { .. } | ClientNavigatorTarget::RoleGroup { .. } => false,
         ClientNavigatorTarget::Workspace {
             endpoint_id: target,
             ..
@@ -3159,7 +3163,8 @@ fn fleet_tree_preview_preserves_branch_continuations_and_machine_provenance() {
     let frame = state.compose(146, 48).unwrap();
     let area = state.layout(146, 48).sidebar;
     let preview = fleet_sidebar_text(&frame, area);
-    assert!(preview.contains("skadi · machines"));
+    assert!(preview.contains("┌─ skadi ─"));
+    assert!(preview.contains("─ machines ┐"));
     assert!(preview.contains("khion-main"));
     assert!(preview.contains("lumi-main"));
     assert!(!preview.contains("odyssey"));
@@ -3196,18 +3201,13 @@ fn fleet_tree_preview_preserves_branch_continuations_and_machine_provenance() {
         .rect;
     assert_eq!(buffer[(last.x - 2, last.y)].symbol(), "└");
     assert_eq!(buffer[(last.x - 2, last.y + 1)].symbol(), " ");
-    let root = std::path::Path::new("/etc/skadi/.runtime/herdr-session-tree");
-    std::fs::create_dir_all(root).unwrap();
-    std::fs::write(root.join("tree-preview.txt"), preview).unwrap();
     state.sidebar_width = 18;
     state.sidebar_width_manual = true;
     let narrow = state.compose(100, 32).unwrap();
     let area = state.layout(100, 32).sidebar;
-    std::fs::write(
-        root.join("tree-preview-narrow.txt"),
-        fleet_sidebar_text(&narrow, area),
-    )
-    .unwrap();
+    let narrow = fleet_sidebar_text(&narrow, area);
+    assert!(narrow.contains("khion"));
+    assert!(!narrow.contains("odyssey"));
     for hit in &state.hits.workspaces {
         assert!(hit.rect.x >= area.x + 5);
         assert!(hit.rect.right() <= area.right());

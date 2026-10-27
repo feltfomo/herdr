@@ -13,6 +13,8 @@ use tokio::io::AsyncReadExt;
 
 use super::endpoint::{ClientEndpointId, ProfileId, SavedSshEndpoint};
 
+pub(super) mod launch;
+
 pub(super) const CONFIG_ENV: &str = "HERDR_FLEET_CONFIG";
 static NEXT_PREFERENCE_WRITE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 const MAX_BYTES: usize = 256 * 1024;
@@ -170,6 +172,10 @@ pub(super) struct MachineState {
     pub epoch: u64,
     pub error: Option<String>,
     pub discovered: bool,
+    /// Every session the machine last reported, kept only as listing data for the session
+    /// picker. Nothing here is registered as an endpoint or attached; `State::sessions`
+    /// remains the only source of endpoints and stays filtered to the selected session.
+    pub listed: Vec<DiscoveredSession>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -276,6 +282,7 @@ impl State {
                     epoch: 0,
                     error: None,
                     discovered: false,
+                    listed: Vec::new(),
                 })
                 .collect(),
             sessions: BTreeMap::new(),
@@ -357,6 +364,7 @@ impl State {
             Err(error) => self.machines[index].error = Some(error),
             Ok(sessions) => {
                 self.machines[index].error = None;
+                self.machines[index].listed = sessions.clone();
                 let machine = self.machines[index].machine.clone();
                 let selected = self
                     .config

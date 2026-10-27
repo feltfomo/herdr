@@ -14,6 +14,7 @@ mod version;
 pub(crate) use actions::{
     install_experimental_letta, install_target, uninstall_experimental_letta, uninstall_target,
 };
+pub(crate) use env::home_dir;
 #[cfg(test)]
 pub(crate) use env::integration_env_lock;
 pub(crate) use env::{

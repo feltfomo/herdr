@@ -1,4 +1,4 @@
-use super::render::{display_width, put_right_text, put_text, ShellRenderState};
+use super::render::{display_width, put_text, ShellRenderState};
 use super::*;
 
 pub(super) struct FleetMachineHit {
@@ -76,6 +76,7 @@ pub(super) fn rows(
     }
 }
 
+/// `▾ khion  local          ●`: disclosure, machine, transport, then the endpoint signal.
 pub(super) fn render_machine(
     buffer: &mut Buffer,
     rect: Rect,
@@ -84,55 +85,97 @@ pub(super) fn render_machine(
     state: &ShellRenderState<'_>,
     fleet: &crate::client::fleet::State,
     palette: &Palette,
+    materials: &crate::ui::Materials,
 ) -> FleetMachineHit {
     let group = &fleet.machines[machine];
     let collapsed = fleet.collapsed.contains(&group.machine.id);
-    let marker = if collapsed { "▸" } else { "▾" };
-    let label = if group.machine.id == fleet.config.local_machine {
-        format!("{} · This device", group.machine.label)
-    } else {
-        group.machine.label.clone()
-    };
     let endpoint = endpoint.map(|index| &state.endpoints[index]);
-    let status_badge = if let Some(endpoint) = endpoint {
-        super::endpoint_sidebar::render_endpoint_row(
-            buffer,
-            rect,
-            marker,
-            &label,
+    let (signal, signal_style) = match endpoint {
+        Some(endpoint) => super::endpoint_sidebar::endpoint_signal(
             endpoint,
-            &endpoint.endpoint_id == state.active_endpoint_id,
             state.machine_diagnostics,
             palette,
-        )
-    } else {
-        let signal = if group.error.is_some() {
-            "offline"
-        } else if !group.discovered {
-            "discovering"
-        } else {
-            "not running"
-        };
-        let signal_width = display_width(signal).min(rect.width);
-        put_text(
-            buffer,
-            rect.x,
-            rect.y,
-            rect.width.saturating_sub(signal_width.saturating_add(1)),
-            &format!(" {marker} {label}"),
+            true,
+        ),
+        None => (
+            if group.error.is_some() {
+                "offline"
+            } else if !group.discovered {
+                "discovering"
+            } else {
+                "not running"
+            }
+            .to_owned(),
             Style::default()
-                .fg(palette.text)
-                .add_modifier(Modifier::BOLD),
-        );
-        put_right_text(
+                .fg(palette.overlay0)
+                .add_modifier(Modifier::DIM),
+        ),
+    };
+    let signal_width = display_width(&signal).min(rect.width.saturating_sub(1));
+    let signal_rect = Rect::new(
+        rect.right().saturating_sub(signal_width.saturating_add(1)),
+        rect.y,
+        signal_width,
+        1,
+    );
+    let text_end = signal_rect.x.saturating_sub(1);
+    let disabled =
+        endpoint.is_none_or(|endpoint| endpoint.status == ClientEndpointStatus::Disabled);
+    let mut x = super::render::put_segment(
+        buffer,
+        rect.x.saturating_add(1),
+        rect.y,
+        text_end,
+        if collapsed { "▸ " } else { "▾ " },
+        Style::default().fg(palette.overlay0),
+    );
+    x = super::render::put_segment(
+        buffer,
+        x,
+        rect.y,
+        text_end,
+        &group.machine.label,
+        Style::default()
+            .fg(if disabled {
+                palette.overlay0
+            } else {
+                palette.text
+            })
+            .add_modifier(Modifier::BOLD),
+    );
+    if x.saturating_add(2) < text_end {
+        super::render::put_segment(
             buffer,
-            rect,
+            x.saturating_add(2),
             rect.y,
-            signal,
+            text_end,
+            if group.machine.target.is_none() {
+                "local"
+            } else {
+                "ssh"
+            },
             Style::default().fg(palette.overlay0),
         );
-        Rect::default()
-    };
+    }
+    put_text(
+        buffer,
+        signal_rect.x,
+        rect.y,
+        signal_rect.width,
+        &signal,
+        signal_style,
+    );
+    // Expanded machines leave the focus highlight to their active space.
+    if collapsed
+        && endpoint.is_some_and(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+    {
+        super::sidebar_frame::paint_row(
+            buffer,
+            rect,
+            super::sidebar_frame::RowTone::Focused,
+            materials,
+        );
+    }
     FleetMachineHit {
         rect,
         collapse_toggle: Rect::new(
@@ -141,7 +184,11 @@ pub(super) fn render_machine(
             u16::from(rect.width > 1),
             u16::from(rect.height > 0),
         ),
-        status_badge,
+        status_badge: if endpoint.is_some() {
+            signal_rect
+        } else {
+            Rect::default()
+        },
         machine_id: group.machine.id.clone(),
         endpoint_id: endpoint.map(|endpoint| endpoint.endpoint_id.clone()),
     }

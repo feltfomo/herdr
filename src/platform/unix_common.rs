@@ -400,6 +400,14 @@ pub(crate) fn create_remote_ssh_config_dir(control_socket_name: &str) -> std::io
     ))
 }
 
+/// Replaces this process image with `command`, keeping the pid, controlling terminal and
+/// job-control position the user launched. Returns only when exec fails.
+pub(crate) fn replace_current_process(mut command: std::process::Command) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+
+    command.exec()
+}
+
 pub(crate) fn create_remote_ssh_config_file(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 

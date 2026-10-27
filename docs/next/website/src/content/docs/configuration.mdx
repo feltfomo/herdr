@@ -280,13 +280,14 @@ active_row_bg = "#1e1e2e"
 selection_bg = "#313244"
 panel_bg = "reset"
 accent = "#a6e3a1"
+on_accent = "#11111b"
 green = "#a6e3a1"
 blue = "#89b4fa"
 red = "#f38ba8"
 yellow = "#f9e2af"
 ```
 
-`sidebar_bg` optionally gives the desktop sidebar its own background. When omitted, the sidebar keeps the host terminal background. `active_row_bg` changes the active Space and focused Agent row background without affecting separators or scrollbar tracks. `selection_bg` changes the Navigate-mode cursor row background in the sidebar.
+`sidebar_bg` optionally gives the desktop sidebar its own background. When omitted, the sidebar keeps the host terminal background. `active_row_bg` changes the active Space and focused Agent row background without affecting separators or scrollbar tracks. `selection_bg` changes the Navigate-mode cursor row background in the sidebar. `on_accent` is the text color drawn on accent fills, such as the selected sidebar row. When it's unset, Herdr derives a dark shade of a light accent or a light shade of a dark one, so a theme that only sets `accent` stays readable. `[theme.custom.light]` and `[theme.custom.dark]` accept `on_accent` too.
 
 Color values accept hex, named colors, `rgb(r,g,b)`, or reset aliases like `reset`, `default`, `none`, and `transparent`.
 
@@ -312,6 +313,18 @@ The active palette is applied in this order: built-in theme, `[theme.custom]`, t
 The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](/docs/config-reference/) for sizing, collapsed mode, Agent panel ordering, mouse behavior, pane borders, and other presentation settings.
 
 `ui.pane_borders` accepts `"auto"` (the default, borders only for split panes), `"always"` (also frame a single pane), or `"off"`. A single-pane frame requires `ui.pane_outer_borders = true`, because all its edges are outer edges. Existing boolean values remain valid: `true` means `"auto"` and `false` means `"off"`.
+
+The sidebar's own presentation lives under `[ui.sidebar]`. The first three keys are also in Settings under **sidebar**, which saves them to this table and applies them immediately:
+
+```toml
+[ui.sidebar]
+panel_borders = true
+agent_detail = "detailed"
+show_agent_path = true
+roles = ["orchestrator", "architect", "implementer"]
+```
+
+`panel_borders` draws labelled borders around the sidebar panels. `agent_detail = "compact"` shows one line per agent; `"detailed"` adds a second line with the agent's directory, `$model`, and `$role`. `show_agent_path = false` drops the directory from that line; it's only shown when it differs from the space root anyway. `roles` sets the groups and their order in the agent role picker. Agents that report another `$role` get a group after these, and agents without one are listed as unassigned. Settings shows the configured order, but you edit it here.
 
 Set `tab_bar_position = "bottom"` under `[ui]` to place the desktop tab row below the terminal panes. Prefix, Navigate, Copy, and Resize mode bars temporarily replace the bottom tab row while active. The default is `"top"`.
 

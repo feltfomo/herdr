@@ -48,6 +48,16 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if action == crate::input::KeybindAction::OpenRolePicker {
+                    self.open_role_picker();
+                    outcome.repaint = true;
+                    return;
+                }
+                if action == crate::input::KeybindAction::OpenSessionPicker {
+                    self.open_session_picker();
+                    outcome.repaint = true;
+                    return;
+                }
                 if action == crate::input::KeybindAction::Help {
                     self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                         query: TextEditor::default(),

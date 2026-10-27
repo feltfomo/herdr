@@ -101,6 +101,7 @@ impl ThemeConfig {
 #[serde(default)]
 pub struct CustomThemeColors {
     pub accent: Option<String>,
+    pub on_accent: Option<String>,
     pub panel_bg: Option<String>,
     pub sidebar_bg: Option<String>,
     pub active_row_bg: Option<String>,
@@ -130,6 +131,7 @@ pub struct CustomThemeColors {
 #[serde(default)]
 pub struct ModeThemeColors {
     pub accent: Option<String>,
+    pub on_accent: Option<String>,
     pub panel_bg: Option<String>,
     pub sidebar_bg: Option<String>,
     pub active_row_bg: Option<String>,

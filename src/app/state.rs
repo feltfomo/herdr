@@ -35,6 +35,8 @@ use crate::workspace::Workspace;
 pub struct Palette {
     /// Primary accent (highlight, active borders).
     pub accent: Color,
+    /// Text drawn on an accent fill. `None` derives it from the accent; see `accent_ink`.
+    pub on_accent: Option<Color>,
     /// Background for the tab bar, floating panels, overlays, and modals.
     pub panel_bg: Color,
     /// Optional desktop sidebar background. Reset preserves the terminal background.
@@ -78,6 +80,7 @@ impl Palette {
     pub fn catppuccin() -> Self {
         Self {
             accent: Color::Rgb(137, 180, 250), // blue
+            on_accent: None,
             panel_bg: Color::Rgb(24, 24, 37),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(30, 30, 46),
@@ -103,6 +106,7 @@ impl Palette {
     pub fn catppuccin_latte() -> Self {
         Self {
             accent: Color::Rgb(30, 102, 245),
+            on_accent: None,
             panel_bg: Color::Rgb(239, 241, 245),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(230, 233, 239),
@@ -128,6 +132,7 @@ impl Palette {
     pub fn terminal() -> Self {
         Self {
             accent: Color::Blue,
+            on_accent: None,
             panel_bg: Color::Reset,
             sidebar_bg: Color::Reset,
             active_row_bg: Color::DarkGray,
@@ -153,6 +158,7 @@ impl Palette {
     pub fn tokyo_night() -> Self {
         Self {
             accent: Color::Rgb(122, 162, 247), // blue
+            on_accent: None,
             panel_bg: Color::Rgb(26, 27, 38),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(35, 38, 54),
@@ -178,6 +184,7 @@ impl Palette {
     pub fn tokyo_night_day() -> Self {
         Self {
             accent: Color::Rgb(46, 125, 233),
+            on_accent: None,
             panel_bg: Color::Rgb(225, 226, 231),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(210, 211, 218),
@@ -203,6 +210,7 @@ impl Palette {
     pub fn dracula() -> Self {
         Self {
             accent: Color::Rgb(189, 147, 249), // purple
+            on_accent: None,
             panel_bg: Color::Rgb(40, 42, 54),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(55, 60, 82),
@@ -228,6 +236,7 @@ impl Palette {
     pub fn nord() -> Self {
         Self {
             accent: Color::Rgb(136, 192, 208), // frost
+            on_accent: None,
             panel_bg: Color::Rgb(46, 52, 64),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(67, 76, 94),
@@ -253,6 +262,7 @@ impl Palette {
     pub fn gruvbox() -> Self {
         Self {
             accent: Color::Rgb(215, 153, 33), // yellow
+            on_accent: None,
             panel_bg: Color::Rgb(40, 40, 40),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(50, 49, 48),
@@ -278,6 +288,7 @@ impl Palette {
     pub fn gruvbox_light() -> Self {
         Self {
             accent: Color::Rgb(7, 102, 120),
+            on_accent: None,
             panel_bg: Color::Rgb(251, 241, 199),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(242, 229, 188),
@@ -303,6 +314,7 @@ impl Palette {
     pub fn one_dark() -> Self {
         Self {
             accent: Color::Rgb(97, 175, 239), // blue
+            on_accent: None,
             panel_bg: Color::Rgb(40, 44, 52),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(49, 54, 64),
@@ -328,6 +340,7 @@ impl Palette {
     pub fn one_light() -> Self {
         Self {
             accent: Color::Rgb(64, 120, 242),
+            on_accent: None,
             panel_bg: Color::Rgb(250, 250, 250),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(216, 219, 226),
@@ -353,6 +366,7 @@ impl Palette {
     pub fn solarized() -> Self {
         Self {
             accent: Color::Rgb(38, 139, 210), // blue
+            on_accent: None,
             panel_bg: Color::Rgb(0, 43, 54),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(22, 75, 87),
@@ -378,6 +392,7 @@ impl Palette {
     pub fn solarized_light() -> Self {
         Self {
             accent: Color::Rgb(38, 139, 210),
+            on_accent: None,
             panel_bg: Color::Rgb(253, 246, 227),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(238, 232, 213),
@@ -403,6 +418,7 @@ impl Palette {
     pub fn kanagawa() -> Self {
         Self {
             accent: Color::Rgb(126, 156, 216), // blue
+            on_accent: None,
             panel_bg: Color::Rgb(31, 31, 40),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(54, 54, 70),
@@ -428,6 +444,7 @@ impl Palette {
     pub fn kanagawa_lotus() -> Self {
         Self {
             accent: Color::Rgb(77, 105, 155),
+            on_accent: None,
             panel_bg: Color::Rgb(242, 236, 188),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(213, 206, 163),
@@ -453,6 +470,7 @@ impl Palette {
     pub fn rose_pine() -> Self {
         Self {
             accent: Color::Rgb(196, 167, 231), // iris
+            on_accent: None,
             panel_bg: Color::Rgb(25, 23, 36),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(38, 35, 58),
@@ -478,6 +496,7 @@ impl Palette {
     pub fn rose_pine_dawn() -> Self {
         Self {
             accent: Color::Rgb(144, 122, 169),
+            on_accent: None,
             panel_bg: Color::Rgb(250, 244, 237),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(227, 217, 207),
@@ -503,6 +522,7 @@ impl Palette {
     pub fn vesper() -> Self {
         Self {
             accent: Color::Rgb(255, 199, 153),
+            on_accent: None,
             panel_bg: Color::Rgb(26, 26, 26),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(16, 16, 16),
@@ -521,6 +541,35 @@ impl Palette {
             blue: Color::Rgb(176, 176, 176),
             teal: Color::Rgb(102, 221, 204),
             peach: Color::Rgb(255, 199, 153),
+        }
+    }
+
+    /// Text color for an accent fill. Built-in themes leave `on_accent` unset, so a pale
+    /// accent gets a deep shade of itself and a dark accent a pale one, which keeps the
+    /// selection readable when a wallpaper template only supplies the accent.
+    pub fn accent_ink(&self) -> Color {
+        if let Some(ink) = self.on_accent {
+            return ink;
+        }
+        let Color::Rgb(r, g, b) = self.accent else {
+            return Color::Black;
+        };
+        let luminance = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+        let shade = |channel: u8, toward: f32, keep: f32| {
+            (f32::from(channel) * keep + toward * (1.0 - keep)).round() as u8
+        };
+        if luminance > 110.0 {
+            Color::Rgb(
+                shade(r, 0.0, 0.22),
+                shade(g, 0.0, 0.22),
+                shade(b, 0.0, 0.22),
+            )
+        } else {
+            Color::Rgb(
+                shade(r, 255.0, 0.15),
+                shade(g, 255.0, 0.15),
+                shade(b, 255.0, 0.15),
+            )
         }
     }
 
@@ -554,6 +603,9 @@ impl Palette {
         use crate::config::parse_color;
         if let Some(c) = &custom.accent {
             self.accent = parse_color(c);
+        }
+        if let Some(c) = &custom.on_accent {
+            self.on_accent = Some(parse_color(c));
         }
         if let Some(c) = &custom.panel_bg {
             self.panel_bg = parse_color(c);
@@ -616,6 +668,9 @@ impl Palette {
         use crate::config::parse_color;
         if let Some(c) = &custom.accent {
             self.accent = parse_color(c);
+        }
+        if let Some(c) = &custom.on_accent {
+            self.on_accent = Some(parse_color(c));
         }
         if let Some(c) = &custom.panel_bg {
             self.panel_bg = parse_color(c);

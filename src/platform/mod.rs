@@ -445,8 +445,17 @@ pub(crate) mod unix_image_files;
 #[cfg(unix)]
 pub(crate) use unix_common::{
     begin_cli_output, end_cli_output, forward_remote_bridge_stdio, ignore_server_hangup,
-    local_stream_peer_description, spawn_server_signal_monitor, RemoteBridgeWake,
+    local_stream_peer_description, replace_current_process, spawn_server_signal_monitor,
+    RemoteBridgeWake,
 };
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn replace_current_process(_command: std::process::Command) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening another combined window is not supported on this platform",
+    )
+}
 
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};

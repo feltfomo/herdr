@@ -702,11 +702,15 @@ pub(super) fn finish_client_shell_input(
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
     scheduled_activation: &mut Option<ClientLoopEvent>,
-) -> Result<bool, ClientError> {
+) -> Result<Option<ClientExit>, ClientError> {
     apply_client_shell_input_source_changes(state, prefix_input_source);
+    if let Some(request) = outcome.launch {
+        let _ = write_to_server(endpoints, &ClientMessage::Detach);
+        return Ok(Some(ClientExit::Launch(request)));
+    }
     if outcome.detach {
         let _ = write_to_server(endpoints, &ClientMessage::Detach);
-        return Ok(true);
+        return Ok(Some(ClientExit::Detached));
     }
     if outcome.resize {
         let shell = state.shell.as_ref().expect("shell mode remains active");
@@ -816,7 +820,7 @@ pub(super) fn finish_client_shell_input(
             state.present_frozen_chrome(frame);
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 #[cfg(test)]

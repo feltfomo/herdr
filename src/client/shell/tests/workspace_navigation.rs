@@ -80,7 +80,11 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
             let mut config = ClientShellConfig::from_config(&Config::default());
             config.palette = Palette::terminal();
             config.palette.selection_bg = selection_bg;
-            let expected_bg = if selection_bg == Color::Reset {
+            // The expanded sidebar paints from materials; the compact rail keeps its tokens.
+            let materials = crate::ui::Materials::from_palette(&config.palette);
+            let expected_bg = if !compact {
+                materials.selected_bg
+            } else if selection_bg == Color::Reset {
                 config.palette.active_row_bg
             } else {
                 selection_bg
@@ -111,7 +115,9 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
                     let focused = workspace_rect(&state, &ClientEndpointId::Local, "ws_1");
                     assert_eq!(
                         buffer[(focused.x, focused.y)].bg,
-                        if selection_bg == Color::Reset {
+                        if !compact {
+                            materials.focused
+                        } else if selection_bg == Color::Reset {
                             state.config.palette.sidebar_bg
                         } else {
                             state.config.palette.active_row_bg
@@ -135,12 +141,20 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
             let focused = workspace_rect(&state, &ClientEndpointId::Local, "ws_1");
             assert_eq!(
                 buffer[(focused.x, focused.y)].bg,
-                state.config.palette.active_row_bg
+                if compact {
+                    state.config.palette.active_row_bg
+                } else {
+                    materials.focused
+                }
             );
             let cancelled = workspace_rect(&state, &ClientEndpointId::Local, "ws_3");
             assert_eq!(
                 buffer[(cancelled.x, cancelled.y)].bg,
-                state.config.palette.sidebar_bg
+                if compact {
+                    state.config.palette.sidebar_bg
+                } else {
+                    materials.frame
+                }
             );
         }
     }
@@ -174,8 +188,12 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                 let other = workspace_rect(&state, collision, "ws_2");
                 let focused = workspace_rect(&state, &ClientEndpointId::Local, "ws_1");
                 let palette = &state.config.palette;
+                let materials = crate::ui::Materials::from_palette(palette);
+                let expanded = !compact && cols != 44;
                 let color = if cols == 44 {
                     palette.surface0
+                } else if expanded {
+                    materials.selected_bg
                 } else {
                     palette.selection_bg
                 };
@@ -188,7 +206,9 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                 assert_ne!(buffer[(other.x + 2, other.y)].bg, color);
                 assert_eq!(
                     buffer[(focused.x + 2, focused.y)].bg,
-                    if terminal_theme {
+                    if expanded {
+                        materials.focused
+                    } else if terminal_theme {
                         if cols == 44 {
                             palette.panel_bg
                         } else {
@@ -613,11 +633,29 @@ fn request_local_navigation(state: &mut ClientShellState, down: usize) -> String
 
 fn assert_local_highlight(state: &mut ClientShellState, selected_id: &str) {
     let buffer = state.compose(100, 28).unwrap().to_ratatui_buffer().unwrap();
-    for workspace_id in ["ws_1", "ws_2", "ws_3"] {
-        let rect = workspace_rect(state, &ClientEndpointId::Local, workspace_id);
+    let ids = ["ws_1", "ws_2", "ws_3"];
+    let painted = |color: ratatui::style::Color| {
+        ids.map(|workspace_id| {
+            let rect = workspace_rect(state, &ClientEndpointId::Local, workspace_id);
+            (rect.x..rect.right()).any(|x| buffer[(x, rect.y)].bg == color)
+        })
+    };
+    // The expanded sidebar fills a pending target with the accent and tints focus more
+    // quietly; the compact rail uses one row color for both. The strongest one shown is
+    // the highlight.
+    let materials = crate::ui::Materials::from_palette(&state.config.palette);
+    let highlighted = [
+        materials.selected_bg,
+        state.config.palette.active_row_bg,
+        materials.focused,
+    ]
+    .into_iter()
+    .map(painted)
+    .find(|rows| rows.contains(&true))
+    .unwrap_or_default();
+    for (workspace_id, highlighted) in ids.into_iter().zip(highlighted) {
         assert_eq!(
-            (rect.x..rect.right())
-                .any(|x| buffer[(x, rect.y)].bg == state.config.palette.active_row_bg),
+            highlighted,
             workspace_id == selected_id,
             "expected only {selected_id} highlighted, checking {workspace_id}"
         );

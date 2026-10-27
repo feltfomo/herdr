@@ -23,6 +23,10 @@ pub(crate) struct ClientShellConfig {
     pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: crate::config::AgentsSidebarConfig,
+    pub(super) panel_borders: bool,
+    pub(super) agent_detail: crate::config::AgentDetailConfig,
+    pub(super) show_agent_path: bool,
+    pub(super) roles: Vec<String>,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
@@ -86,6 +90,7 @@ pub(super) struct ShellHitMap {
     pub(super) machines: Vec<MachineHit>,
     pub(super) fleet_machines: Vec<super::fleet_tree::FleetMachineHit>,
     pub(super) fleet_scope: Rect,
+    pub(super) fleet_agent_machines: Vec<(Rect, String)>,
     pub(super) fleet_workspace_regions: Vec<super::fleet_tree::WorkspaceRegion>,
     pub(super) workspaces: Vec<WorkspaceHit>,
     pub(super) workspace_body: Rect,
@@ -115,6 +120,7 @@ pub(super) struct ShellHitMap {
     pub(super) mobile_targets: Vec<(Rect, ClientMobileTarget)>,
     pub(super) mobile_max_scroll: usize,
     pub(super) global_launcher: Rect,
+    pub(super) session_picker: Rect,
     pub(super) notification_toast: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
@@ -126,6 +132,8 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(super) navigator_scrollbar: Rect,
     pub(super) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    pub(super) session_popup: Rect,
+    pub(super) session_rows: Vec<(Rect, String)>,
     pub(super) worktree_search: Rect,
     pub(super) worktree_rows: Vec<(Rect, usize)>,
     pub(super) help_popup: Rect,
@@ -262,6 +270,8 @@ pub(crate) enum ClientShellAction {
 #[derive(Default)]
 pub(crate) struct ClientShellInput {
     pub detach: bool,
+    /// Leave this window for one scoped to another session.
+    pub launch: Option<crate::client::fleet::launch::LaunchRequest>,
     pub repaint: bool,
     pub resize: bool,
     pub query_host_appearance: bool,
@@ -288,6 +298,7 @@ pub(super) enum ClientShellOverlayKind {
     ConfirmClose,
     Help,
     Navigator,
+    SessionPicker,
     WorktreeCreate,
     WorktreeOpen,
     WorktreeRemove,
@@ -320,6 +331,10 @@ pub(super) enum ClientRenameTarget {
     Pane {
         pane_id: String,
     },
+    /// A new logical session for a combined window, created on the fleet machine `machine`.
+    NewSession {
+        machine: String,
+    },
 }
 
 #[derive(Debug)]
@@ -350,6 +365,11 @@ pub(super) enum ClientNavigatorTarget {
         endpoint_id: ClientEndpointId,
         pane_id: String,
     },
+    /// A role heading in the by-role mode. Headings are never selected or activated;
+    /// `None` is the group of agents that report no role.
+    RoleGroup {
+        role: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -358,6 +378,7 @@ pub(super) struct ClientNavigatorRow {
     pub(super) label: String,
     pub(super) meta: String,
     pub(super) detail: String,
+    pub(super) machine: String,
     pub(super) agent: Option<String>,
     pub(super) status: Option<crate::api::schema::AgentStatus>,
     pub(super) stale: bool,
@@ -372,6 +393,22 @@ pub(super) struct ClientNavigatorOverlay {
     pub(super) selected: Option<ClientNavigatorTarget>,
     pub(super) scroll: usize,
     pub(super) filter: Option<ClientNavigatorFilter>,
+    pub(super) mode: ClientNavigatorMode,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) enum ClientNavigatorMode {
+    #[default]
+    Tree,
+    /// Agents grouped by their `role` metadata token. The configured order is captured
+    /// when the picker opens so row building needs no access to the live config.
+    Roles { order: Vec<String> },
+}
+
+#[derive(Debug)]
+pub(super) struct ClientSessionPickerOverlay {
+    pub(super) selected: Option<String>,
+    pub(super) scroll: usize,
 }
 
 #[derive(Debug)]
@@ -392,6 +429,7 @@ pub(super) enum ClientSettingsSection {
     Indicators,
     Sound,
     Toast,
+    Sidebar,
     Integrations,
 }
 
@@ -401,6 +439,7 @@ impl ClientSettingsSection {
         Self::Indicators,
         Self::Sound,
         Self::Toast,
+        Self::Sidebar,
         Self::Integrations,
     ];
 
@@ -410,6 +449,7 @@ impl ClientSettingsSection {
             Self::Indicators => "indicators",
             Self::Sound => "sound",
             Self::Toast => "toasts",
+            Self::Sidebar => "sidebar",
             Self::Integrations => "integrations",
         }
     }
@@ -593,6 +633,7 @@ pub(super) enum ClientShellOverlay {
     ConfirmClose(ClientConfirmCloseOverlay),
     Help(ClientHelpOverlay),
     Navigator(ClientNavigatorOverlay),
+    SessionPicker(ClientSessionPickerOverlay),
     WorktreeCreate(ClientWorktreeCreateOverlay),
     WorktreeOpen(ClientWorktreeOpenOverlay),
     WorktreeRemove(ClientWorktreeRemoveOverlay),
@@ -611,6 +652,7 @@ impl ClientShellOverlay {
             Self::ConfirmClose(_) => ClientShellOverlayKind::ConfirmClose,
             Self::Help(_) => ClientShellOverlayKind::Help,
             Self::Navigator(_) => ClientShellOverlayKind::Navigator,
+            Self::SessionPicker(_) => ClientShellOverlayKind::SessionPicker,
             Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
             Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
             Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
@@ -907,6 +949,9 @@ pub(crate) struct ClientShellState {
         ClientEndpointId,
         Option<String>,
     )>,
+    /// Machines folded in the fleet agent panel. Kept apart from the machine tree's
+    /// folds so hiding a machine's spaces never hides agents that need attention.
+    pub(super) fleet_agent_collapsed: HashSet<String>,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
     pub(super) active_endpoint_id: ClientEndpointId,
     pub(super) collapsed_endpoints: HashSet<ClientEndpointId>,
@@ -1092,6 +1137,7 @@ impl ClientShellState {
             hits: ShellHitMap::default(),
             fleet: None,
             fleet_agent_projection: None,
+            fleet_agent_collapsed: HashSet::new(),
             endpoints: vec![local_endpoint()],
             active_endpoint_id: ClientEndpointId::Local,
             collapsed_endpoints: HashSet::new(),

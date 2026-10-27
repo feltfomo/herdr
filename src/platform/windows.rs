@@ -259,6 +259,15 @@ pub(super) fn read_terminal_grid_size() -> std::io::Result<(u16, u16)> {
     crossterm::terminal::size()
 }
 
+/// Windows has no exec, so the replacement runs as a child on the same console and this
+/// process exits with its status once it ends. Returns only when the child cannot start.
+pub(crate) fn replace_current_process(mut command: std::process::Command) -> std::io::Error {
+    match command.status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(error) => error,
+    }
+}
+
 pub(crate) fn replace_file(
     source: &std::path::Path,
     destination: &std::path::Path,

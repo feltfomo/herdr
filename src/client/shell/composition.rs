@@ -62,6 +62,7 @@ impl ClientShellState {
             active_endpoint_id: &self.active_endpoint_id,
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
+            collapsed_agent_machines: &self.fleet_agent_collapsed,
             remote_collapsed_groups: &self.remote_collapsed_groups,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
@@ -220,6 +221,7 @@ impl ClientShellState {
                 active_endpoint_id: &self.active_endpoint_id,
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
+                collapsed_agent_machines: &self.fleet_agent_collapsed,
                 remote_collapsed_groups: &self.remote_collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
@@ -672,8 +674,8 @@ impl ClientShellState {
                     snapshot,
                     &self.endpoints,
                     &self.active_endpoint_id,
-                    &self.config.keybinds,
-                    &self.config.palette,
+                    self.fleet.as_ref(),
+                    &self.config,
                 )?;
                 occlusion.cover(rendered.area);
                 self.hits.overlay_primary = rendered.primary;
@@ -684,6 +686,8 @@ impl ClientShellState {
                 self.hits.navigator_rows = rendered.navigator_rows;
                 self.hits.navigator_scrollbar = rendered.navigator_scrollbar;
                 self.hits.navigator_scroll_metrics = rendered.navigator_scroll_metrics;
+                self.hits.session_popup = rendered.session_popup;
+                self.hits.session_rows = rendered.session_rows;
                 self.hits.worktree_search = rendered.worktree_search;
                 self.hits.worktree_rows = rendered.worktree_rows;
                 self.hits.help_popup = rendered.help_popup;

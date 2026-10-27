@@ -8,7 +8,9 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+use super::sidebar_frame::SidebarFrame;
 use super::*;
+use crate::ui::Materials;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
@@ -51,27 +53,28 @@ pub(super) fn ordered_agent_pane_ids(
 
 pub(super) fn render_agent_panel(
     buffer: &mut Buffer,
-    area: Rect,
+    frame: &SidebarFrame,
+    materials: &Materials,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
-    if !render_agent_panel_header(
+    render_agent_panel_header(
         buffer,
-        area,
+        frame,
+        materials,
         snapshot.agent_view_label.as_deref(),
         config,
         hits,
-    ) {
-        return;
-    }
-
+    );
     let rows = agent_rows(snapshot, config, None);
+    let gaps = uniform_gaps(rows.len(), config.agents.row_gap);
     render_agent_list(
         buffer,
-        area,
+        frame.agent_body,
         &rows,
+        &gaps,
         snapshot
             .agent_view_label
             .as_ref()
@@ -80,94 +83,67 @@ pub(super) fn render_agent_panel(
         agent_scroll,
         hits,
         |row| row.rows.len(),
-        |buffer, rect, row, hits| {
+        |buffer, rect, _, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+            render_agent_row(buffer, rect, row, config, materials);
         },
     );
 }
 
+/// Labels the agent panel with its sort order, which doubles as the sort toggle.
 pub(super) fn render_agent_panel_header(
     buffer: &mut Buffer,
-    area: Rect,
+    frame: &SidebarFrame,
+    materials: &Materials,
     agent_view_label: Option<&str>,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
-) -> bool {
-    if area.height == 0 {
-        return false;
-    }
-    put_text(
-        buffer,
-        area.x,
-        area.y,
-        area.width,
-        &"─".repeat(area.width as usize),
-        Style::default().fg(config.palette.surface_dim),
-    );
-    if area.height < 2 {
-        return false;
-    }
-    put_text(
-        buffer,
-        area.x,
-        area.y + 1,
-        area.width,
-        " agents",
-        Style::default()
-            .fg(config.palette.overlay0)
-            .add_modifier(Modifier::BOLD),
-    );
+) {
     let sort_label = agent_view_label.unwrap_or(match config.agent_panel_sort {
         crate::config::AgentPanelSortConfig::Spaces => "grouped",
         crate::config::AgentPanelSortConfig::Priority => "priority",
     });
-    let sort_width = display_width(sort_label).min(area.width as usize) as u16;
-    let sort_rect = Rect::new(
-        area.right().saturating_sub(sort_width),
-        area.y + 1,
-        sort_width,
-        1,
-    );
+    let style = Style::default()
+        .fg(if agent_view_label.is_some() {
+            config.palette.accent
+        } else {
+            config.palette.overlay0
+        })
+        .add_modifier(Modifier::BOLD);
+    let sort_rect =
+        frame.render_agent_header(buffer, (sort_label, style), materials, &config.palette);
     hits.agent_sort_toggle = if config.mouse_capture && agent_view_label.is_none() {
         sort_rect
     } else {
         Rect::default()
     };
-    put_text(
-        buffer,
-        sort_rect.x,
-        sort_rect.y,
-        sort_rect.width,
-        sort_label,
-        Style::default()
-            .fg(if agent_view_label.is_some() {
-                config.palette.accent
-            } else {
-                config.palette.overlay0
-            })
-            .add_modifier(Modifier::BOLD),
-    );
-    true
+    hits.sidebar_section_divider = frame.section_divider_excluding(hits.agent_sort_toggle);
 }
 
+pub(super) fn uniform_gaps(len: usize, gap: u16) -> Vec<u16> {
+    let mut gaps = vec![gap; len];
+    if let Some(last) = gaps.last_mut() {
+        *last = 0;
+    }
+    gaps
+}
+
+/// Scrolls and draws variable-height agent entries into `body`.
+///
+/// `render_row` receives the entry rect and the visible part of the gap below it, so
+/// tree connectors can continue through row gaps.
 pub(super) fn render_agent_list<T>(
     buffer: &mut Buffer,
-    area: Rect,
+    body: Rect,
     rows: &[T],
+    gaps: &[u16],
     empty_message: Option<&str>,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
     row_lines: impl Fn(&T) -> usize,
-    mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
+    mut render_row: impl FnMut(&mut Buffer, Rect, u16, &T, &mut ShellHitMap),
 ) {
-    let body = Rect::new(
-        area.x,
-        area.y.saturating_add(3),
-        area.width,
-        area.height.saturating_sub(3),
-    );
     hits.agent_body = body;
     if body.is_empty() || rows.is_empty() {
         *agent_scroll = 0;
@@ -190,19 +166,8 @@ pub(super) fn render_agent_list<T>(
         .iter()
         .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
         .collect::<Vec<_>>();
-    let gaps = rows
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            if index + 1 < rows.len() {
-                config.agents.row_gap
-            } else {
-                0
-            }
-        })
-        .collect::<Vec<_>>();
     let metrics =
-        super::scroll::list_scroll_metrics(&row_heights, &gaps, body.height, *agent_scroll);
+        super::scroll::list_scroll_metrics(&row_heights, gaps, body.height, *agent_scroll);
     hits.agent_max_scroll = metrics.max_offset_from_bottom;
     hits.agent_scroll_metrics = Some(metrics);
     *agent_scroll = metrics
@@ -217,14 +182,10 @@ pub(super) fn render_agent_list<T>(
             break;
         }
         let rect = Rect::new(body.x, y, content_width, height);
-        render_row(buffer, rect, row, hits);
-        y = y
-            .saturating_add(height)
-            .saturating_add(if index + 1 < rows.len() {
-                config.agents.row_gap
-            } else {
-                0
-            });
+        let gap = gaps.get(index).copied().unwrap_or(0);
+        let visible_gap = gap.min(body.bottom().saturating_sub(rect.bottom()));
+        render_row(buffer, rect, visible_gap, row, hits);
+        y = y.saturating_add(height).saturating_add(gap);
     }
 
     if show_scrollbar {
@@ -323,10 +284,11 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
+    materials: &Materials,
 ) {
     let palette = &config.palette;
     let row_style = if row.focused {
-        Style::default().bg(palette.active_row_bg)
+        Style::default().bg(materials.focused)
     } else {
         Style::default()
     };
@@ -381,11 +343,7 @@ fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: 
     }
 }
 
-fn display_width(text: &str) -> usize {
-    unicode_width::UnicodeWidthStr::width(text)
-}
-
-fn sidebar_status_text(status: crate::api::schema::AgentStatus) -> &'static str {
+pub(super) fn sidebar_status_text(status: crate::api::schema::AgentStatus) -> &'static str {
     use crate::api::schema::AgentStatus;
     match status {
         AgentStatus::Blocked => "blocked",

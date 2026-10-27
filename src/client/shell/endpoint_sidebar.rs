@@ -1,4 +1,5 @@
 use super::render::{display_width, put_right_text, put_text, ShellRenderState};
+use super::sidebar_frame::{paint_row, FooterActions, RowTone, SidebarFrame};
 use super::*;
 
 fn collapsed_groups_for_endpoint<'a>(
@@ -247,29 +248,25 @@ pub(super) fn render_expanded(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    super::render::render_sidebar_background(buffer, area, palette);
-    hits.sidebar_divider = if area.is_empty() {
-        Rect::default()
-    } else {
-        Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
-    };
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
-    let heading = state
-        .fleet
-        .map(|fleet| format!(" {} · machines", fleet.config.selected.session));
-    put_text(
-        buffer,
-        workspace_area.x,
-        workspace_area.y,
-        workspace_area.width,
-        heading.as_deref().unwrap_or(" machines"),
-        Style::default()
-            .fg(palette.overlay0)
-            .add_modifier(Modifier::BOLD),
+    let materials = crate::ui::Materials::from_palette(palette);
+    let frame = SidebarFrame::layout(
+        area,
+        state.sidebar_section_split,
+        config.panel_borders,
+        config.mouse_capture,
     );
+    frame.paint(buffer, &materials);
+    hits.sidebar_divider = frame.width_handle();
+    match state.fleet {
+        Some(fleet) => frame.render_title(
+            buffer,
+            &fleet.config.selected.session,
+            Some("machines"),
+            &materials,
+            palette,
+        ),
+        None => frame.render_title(buffer, "machines", None, &materials, palette),
+    }
 
     let empty_collapsed_groups = HashSet::new();
 
@@ -324,14 +321,7 @@ pub(super) fn render_expanded(
             }
         }
     }
-    let body = Rect::new(
-        workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
-        workspace_area.width,
-        workspace_area
-            .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
-    );
+    let body = frame.workspace_body;
     hits.workspace_body = body;
     let row_heights = rows
         .iter()
@@ -450,7 +440,7 @@ pub(super) fn render_expanded(
                 if let Some(fleet) = state.fleet {
                     let rect = Rect::new(body.x, y, content_width, 1);
                     hits.fleet_machines.push(super::fleet_tree::render_machine(
-                        buffer, rect, *machine, *endpoint, state, fleet, palette,
+                        buffer, rect, *machine, *endpoint, state, fleet, palette, &materials,
                     ));
                 }
                 y = y.saturating_add(1);
@@ -475,10 +465,12 @@ pub(super) fn render_expanded(
                     marker,
                     &endpoint.label,
                     endpoint,
-                    collapsed && &endpoint.endpoint_id == state.active_endpoint_id,
                     state.machine_diagnostics,
                     palette,
                 );
+                if collapsed && &endpoint.endpoint_id == state.active_endpoint_id {
+                    paint_row(buffer, rect, RowTone::Focused, &materials);
+                }
                 hits.machines.push(MachineHit {
                     rect,
                     status_badge,
@@ -546,6 +538,10 @@ pub(super) fn render_expanded(
                 let selected = state.selected_workspace_id.is_some_and(|target| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
                 });
+                // Only the fleet tree offers drag reordering across a machine's spaces.
+                let dragged = branch.is_some()
+                    && endpoint_active
+                    && state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,
@@ -554,11 +550,7 @@ pub(super) fn render_expanded(
                     entry,
                     tokens,
                     endpoint_active && workspace.focused,
-                    selected,
-                    state.selected_workspace_id.is_some(),
-                    branch.is_some()
-                        && endpoint_active
-                        && state.dragged_workspace_id == Some(workspace.workspace_id.as_str()),
+                    dragged,
                     palette,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {
@@ -593,6 +585,16 @@ pub(super) fn render_expanded(
                         palette,
                     )
                 };
+                paint_row(
+                    buffer,
+                    rect,
+                    super::sidebar::workspace_tone(
+                        selected,
+                        dragged,
+                        endpoint_active && workspace.focused,
+                    ),
+                    &materials,
+                );
                 hits.workspaces.push(WorkspaceHit {
                     rect: hit_rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
@@ -612,96 +614,47 @@ pub(super) fn render_expanded(
         super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
     }
 
-    let footer_y = workspace_area.bottom().saturating_sub(1);
     if config.mouse_capture {
-        let label = format!(" new · {}", active_endpoint_label(state));
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            display_width(&label).min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
-        put_text(
+        frame.render_footer(
             buffer,
-            workspace_area.x,
-            footer_y,
-            workspace_area.width,
-            &label,
-            Style::default().fg(palette.overlay0),
-        );
-        let attention = active_snapshot.is_some_and(super::global_menu::global_menu_attention);
-        let width = if attention { 8 } else { 6 }.min(workspace_area.width);
-        hits.global_launcher = Rect::new(
-            workspace_area.right().saturating_sub(width),
-            footer_y,
-            width,
-            1,
-        );
-        put_right_text(
-            buffer,
-            workspace_area,
-            footer_y,
-            if attention { "● menu" } else { "menu" },
-            Style::default().fg(if attention {
-                palette.accent
-            } else {
-                palette.overlay0
-            }),
+            FooterActions {
+                sessions: state.fleet.is_some(),
+                attention: active_snapshot.is_some_and(super::global_menu::global_menu_attention),
+            },
+            palette,
+            hits,
         );
     }
-    super::endpoint_agents::render_expanded(
-        buffer,
-        detail_area,
-        active_snapshot.and_then(|snapshot| snapshot.agent_view_label.as_deref()),
-        state.endpoints,
-        state.active_endpoint_id,
-        config,
-        state.agent_scroll,
-        hits,
-    );
+    let agent_view_label =
+        active_snapshot.and_then(|snapshot| snapshot.agent_view_label.as_deref());
     if let Some(fleet) = state.fleet {
-        let rect = Rect::new(
-            detail_area.x.saturating_add(1),
-            detail_area.y.saturating_add(2),
-            detail_area.width.saturating_sub(2),
-            u16::from(detail_area.height > 2),
-        );
-        put_text(
+        super::fleet_agents::render(
             buffer,
-            rect.x,
-            rect.y,
-            rect.width,
-            &format!("scope · {}", fleet.scope.label()),
-            Style::default().fg(palette.text),
+            &frame,
+            &materials,
+            state.endpoints,
+            state.active_endpoint_id,
+            fleet,
+            state.collapsed_agent_machines,
+            agent_view_label,
+            config,
+            state.agent_scroll,
+            hits,
         );
-        hits.fleet_scope = rect;
+    } else {
+        super::endpoint_agents::render_expanded(
+            buffer,
+            &frame,
+            &materials,
+            agent_view_label,
+            state.endpoints,
+            state.active_endpoint_id,
+            config,
+            state.agent_scroll,
+            hits,
+        );
     }
-    hits.sidebar_toggle = Rect::new(
-        area.right().saturating_sub(2),
-        area.bottom().saturating_sub(1),
-        u16::from(area.width > 1),
-        u16::from(area.height > 0),
-    );
-    put_text(
-        buffer,
-        hits.sidebar_toggle.x,
-        hits.sidebar_toggle.y,
-        hits.sidebar_toggle.width,
-        "«",
-        Style::default().fg(palette.overlay0),
-    );
-}
-
-fn active_endpoint_label(state: &ShellRenderState<'_>) -> String {
-    if let Some(fleet) = state.fleet {
-        return fleet.label(state.active_endpoint_id);
-    }
-    state
-        .endpoints
-        .iter()
-        .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
-        .map_or("Local", |endpoint| endpoint.label.as_str())
-        .to_owned()
+    hits.sidebar_toggle = frame.render_toggle(buffer, palette);
 }
 
 pub(super) fn render_endpoint_row(
@@ -710,33 +663,10 @@ pub(super) fn render_endpoint_row(
     marker: &str,
     label: &str,
     endpoint: &ClientShellEndpoint,
-    highlighted: bool,
     auth: &super::machine_diagnostics::MachineDiagnostics,
     palette: &Palette,
 ) -> Rect {
-    if highlighted {
-        buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
-    }
-    let (glyph, mut state, color) = endpoint_status_presentation(endpoint.status, palette);
-    if endpoint.fleet_label.is_some() && endpoint.status == ClientEndpointStatus::Disabled {
-        state = "stopped";
-    }
-    let state = if endpoint.status == ClientEndpointStatus::Online {
-        ""
-    } else {
-        state
-    };
-    let signal = if auth.required_for(endpoint) {
-        "! auth".to_owned()
-    } else if endpoint.status == ClientEndpointStatus::Attention {
-        "! error".to_owned()
-    } else if endpoint.endpoint_id.is_local() {
-        String::new()
-    } else if state.is_empty() {
-        glyph.to_owned()
-    } else {
-        format!("{glyph} {state}")
-    };
+    let (signal, signal_style) = endpoint_signal(endpoint, auth, palette, false);
     let signal_width = display_width(&signal).min(rect.width);
     put_text(
         buffer,
@@ -754,17 +684,45 @@ pub(super) fn render_endpoint_row(
             )
             .add_modifier(Modifier::BOLD),
     );
-    put_right_text(
-        buffer,
-        rect,
-        rect.y,
-        &signal,
-        auth.badge_style(endpoint, palette, Style::default().fg(color)),
-    );
+    put_right_text(buffer, rect, rect.y, &signal, signal_style);
     Rect::new(
         rect.right().saturating_sub(signal_width),
         rect.y,
         signal_width,
         1,
+    )
+}
+
+/// The status glyph or problem word shown at the right of a machine row. Local rows
+/// stay quiet in plain machine lists, where they are always reachable, unless asked.
+pub(super) fn endpoint_signal(
+    endpoint: &ClientShellEndpoint,
+    auth: &super::machine_diagnostics::MachineDiagnostics,
+    palette: &Palette,
+    local_glyph: bool,
+) -> (String, Style) {
+    let (glyph, mut state, color) = endpoint_status_presentation(endpoint.status, palette);
+    if endpoint.fleet_label.is_some() && endpoint.status == ClientEndpointStatus::Disabled {
+        state = "stopped";
+    }
+    let state = if endpoint.status == ClientEndpointStatus::Online {
+        ""
+    } else {
+        state
+    };
+    let signal = if auth.required_for(endpoint) {
+        "! auth".to_owned()
+    } else if endpoint.status == ClientEndpointStatus::Attention {
+        "! error".to_owned()
+    } else if endpoint.endpoint_id.is_local() && !local_glyph {
+        String::new()
+    } else if state.is_empty() {
+        glyph.to_owned()
+    } else {
+        format!("{glyph} {state}")
+    };
+    (
+        signal,
+        auth.badge_style(endpoint, palette, Style::default().fg(color)),
     )
 }

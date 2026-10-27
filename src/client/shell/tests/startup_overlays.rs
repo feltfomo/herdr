@@ -676,7 +676,7 @@ fn update_ready_menu_opens_client_owned_release_notes_and_dismisses_by_version()
     state.set_snapshot(Box::new(endpoint_snapshot.clone()));
     state.set_pane_surface(surface());
     let shell = state.compose(106, 30).expect("shell frame");
-    assert_eq!(state.hits.global_launcher.width, 8);
+    assert_eq!(state.hits.global_launcher.width, 6);
     let launcher = state.hits.global_launcher;
     let shell_buffer = shell.to_ratatui_buffer().expect("shell buffer");
     let badge_x = launcher.right().saturating_sub(6);
@@ -1044,7 +1044,7 @@ fn outdated_integration_badges_launcher_settings_and_settings_tab() {
     state.set_snapshot(Box::new(endpoint_snapshot));
     state.set_pane_surface(surface());
     let shell = state.compose(106, 30).expect("integration attention shell");
-    assert_eq!(state.hits.global_launcher.width, 8);
+    assert_eq!(state.hits.global_launcher.width, 6);
     let shell_text = shell
         .cells
         .iter()
@@ -1103,7 +1103,7 @@ fn combined_update_and_integration_attention_preserves_both_badges() {
     state.set_snapshot(Box::new(endpoint_snapshot));
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("combined attention shell");
-    assert_eq!(state.hits.global_launcher.width, 8);
+    assert_eq!(state.hits.global_launcher.width, 6);
 
     state.toggle_global_menu();
     let menu = state.compose(106, 30).expect("combined attention menu");
@@ -1196,7 +1196,7 @@ fn client_settings_preview_restore_and_endpoint_integrations_are_owned_by_overla
 
     state.open_settings_overlay();
     state.compose(106, 30).expect("settings overlay");
-    for _ in 0..3 {
+    for _ in 0..ClientSettingsSection::ALL.len() - 2 {
         let next = state.handle_input_bytes(b"\t");
         assert!(next.actions.is_empty());
     }
@@ -1312,5 +1312,112 @@ fn client_settings_preview_restore_and_endpoint_integrations_are_owned_by_overla
             ref integration_messages,
             ..
         })) if integration_messages == &["installed codex"]
+    ));
+}
+
+#[test]
+fn sidebar_settings_section_persists_choices_and_applies_them_live() {
+    struct ConfigPathGuard(Option<std::ffi::OsString>);
+    impl Drop for ConfigPathGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(previous) => std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, previous),
+                None => std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR),
+            }
+        }
+    }
+
+    let _lock = crate::config::test_config_env_lock().lock().unwrap();
+    let path = std::env::temp_dir().join(format!(
+        "herdr-sidebar-settings-{}-{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, "# mine\n[ui.sidebar.agents]\nrow_gap = 1\n").unwrap();
+    let _env = ConfigPathGuard(std::env::var_os(crate::config::CONFIG_PATH_ENV_VAR));
+    std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.open_settings_overlay();
+    let sidebar_position = ClientSettingsSection::ALL
+        .iter()
+        .position(|section| *section == ClientSettingsSection::Sidebar)
+        .expect("sidebar section in tab order");
+    for _ in 0..sidebar_position {
+        state.handle_input_bytes(b"\t");
+    }
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
+            section: ClientSettingsSection::Sidebar,
+            selected: 0,
+            ..
+        }))
+    ));
+
+    let frame = state.compose(106, 30).expect("sidebar settings");
+    let text = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+    assert!(text.contains("orchestrator → architect → implementer"));
+    let hits = state.hits.settings_choices.clone();
+    assert_eq!(
+        hits.iter().map(|(_, index)| *index).collect::<Vec<_>>(),
+        (0..6).collect::<Vec<_>>()
+    );
+    let click = |state: &mut ClientShellState, rect: Rect| {
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 2,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    };
+
+    click(&mut state, hits[1].0);
+    assert!(!state.config.panel_borders);
+
+    state.handle_input_bytes(b"j");
+    state.handle_input_bytes(b"\r");
+    assert_eq!(
+        state.config.agent_detail,
+        crate::config::AgentDetailConfig::Compact
+    );
+
+    state.compose(106, 30).expect("sidebar settings after save");
+    let path_hidden = state.hits.settings_choices[5].0;
+    click(&mut state, path_hidden);
+    assert!(!state.config.show_agent_path);
+
+    let written = std::fs::read_to_string(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    let config: Config = toml::from_str(&written).unwrap();
+    assert!(!config.ui.sidebar.panel_borders);
+    assert_eq!(
+        config.ui.sidebar.agent_detail,
+        crate::config::AgentDetailConfig::Compact
+    );
+    assert!(!config.ui.sidebar.show_agent_path);
+    assert_eq!(config.ui.sidebar.agents.row_gap, 1);
+    assert_eq!(state.config.agents.row_gap, 1);
+    assert!(written.starts_with("# mine\n"));
+
+    // Reopening the section starts on the persisted panel-borders value.
+    state.handle_input_bytes(b"\t");
+    state.handle_input_bytes(b"h");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
+            section: ClientSettingsSection::Sidebar,
+            selected: 1,
+            ..
+        }))
     ));
 }

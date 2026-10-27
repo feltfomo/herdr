@@ -47,6 +47,10 @@ pub(super) fn global_menu_items(
         ));
     }
     items.push((
+        "agents by role",
+        ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenRolePicker),
+    ));
+    items.push((
         "detach",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::Detach),
     ));

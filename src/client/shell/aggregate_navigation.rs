@@ -296,6 +296,9 @@ pub(super) fn navigator_rows(
     active_endpoint_id: &ClientEndpointId,
     navigator: &ClientNavigatorOverlay,
 ) -> Vec<ClientNavigatorRow> {
+    if let ClientNavigatorMode::Roles { order } = &navigator.mode {
+        return super::pickers::role_rows(endpoints, active_endpoint_id, navigator, order);
+    }
     let query = navigator.query.trim().to_lowercase();
     let filter = |status| match navigator.filter {
         Some(ClientNavigatorFilter::Blocked) => status == crate::api::schema::AgentStatus::Blocked,
@@ -424,6 +427,7 @@ pub(super) fn navigator_rows(
                                     "{} / {} / {}",
                                     workspace.label, tab.label, pane.pane_id
                                 ),
+                                machine: String::new(),
                                 agent: agent_kind.map(str::to_owned),
                                 status: Some(status),
                                 stale,
@@ -446,6 +450,7 @@ pub(super) fn navigator_rows(
                         label: workspace.label.clone(),
                         meta: workspace.branch.clone().unwrap_or_default(),
                         detail: workspace.new_workspace_cwd.clone(),
+                        machine: String::new(),
                         agent: None,
                         status: None,
                         stale,
@@ -466,6 +471,7 @@ pub(super) fn navigator_rows(
                     label: endpoint.label.to_owned(),
                     meta: String::new(),
                     detail: String::new(),
+                    machine: String::new(),
                     agent: None,
                     status: None,
                     stale,
@@ -485,12 +491,22 @@ pub(super) fn navigator_selected_index(
     rows: &[ClientNavigatorRow],
     navigator: &ClientNavigatorOverlay,
 ) -> Option<usize> {
-    match navigator.selected.as_ref() {
-        Some(target) => rows.iter().position(|row| row.target == *target),
-        None => rows
-            .iter()
+    let first_pane = || {
+        rows.iter()
             .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
-            .or_else(|| (!rows.is_empty()).then_some(0)),
+            .or_else(|| (!rows.is_empty()).then_some(0))
+    };
+    match navigator.selected.as_ref() {
+        Some(target) => rows
+            .iter()
+            .position(|row| row.target == *target)
+            // A filter can drop the selected agent; role headings must never inherit it.
+            .or_else(|| {
+                matches!(navigator.mode, ClientNavigatorMode::Roles { .. })
+                    .then(first_pane)
+                    .flatten()
+            }),
+        None => first_pane(),
     }
 }
 

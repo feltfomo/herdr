@@ -236,6 +236,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) active_endpoint_id: &'a ClientEndpointId,
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
     pub(super) collapsed_groups: &'a HashSet<String>,
+    pub(super) collapsed_agent_machines: &'a HashSet<String>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,
@@ -332,6 +333,8 @@ pub(super) fn render_shell(
         hits.machines.clear();
         hits.fleet_machines.clear();
         hits.fleet_scope = Rect::default();
+        hits.fleet_agent_machines.clear();
+        hits.session_picker = Rect::default();
         hits.fleet_workspace_regions.clear();
         hits.workspaces.clear();
         hits.agents.clear();

@@ -1,3 +1,4 @@
+use super::super::sidebar_frame::{paint_row, FooterActions, RowTone, SidebarFrame};
 use super::*;
 use ratatui::{
     text::Line,
@@ -205,36 +206,19 @@ pub(crate) fn render_sidebar(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    render_sidebar_background(buffer, area, palette);
-    hits.sidebar_divider = if area.is_empty() {
-        Rect::default()
-    } else {
-        Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
-    };
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
-    put_text(
-        buffer,
-        workspace_area.x,
-        workspace_area.y,
-        workspace_area.width,
-        " spaces",
-        Style::default()
-            .fg(palette.overlay0)
-            .add_modifier(Modifier::BOLD),
+    let materials = crate::ui::Materials::from_palette(palette);
+    let frame = SidebarFrame::layout(
+        area,
+        state.sidebar_section_split,
+        config.panel_borders,
+        config.mouse_capture,
     );
+    frame.paint(buffer, &materials);
+    frame.render_title(buffer, "spaces", None, &materials, palette);
+    hits.sidebar_divider = frame.width_handle();
 
     let entries = workspace_entries(snapshot, state.collapsed_groups);
-    let body = Rect::new(
-        workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
-        workspace_area.width,
-        workspace_area
-            .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
-    );
+    let body = frame.workspace_body;
     hits.workspace_body = body;
     let row_heights = entries
         .iter()
@@ -314,13 +298,6 @@ pub(crate) fn render_sidebar(
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
         let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
-        if selected {
-            buffer.set_style(rect, Style::default().bg(palette.selection_bg));
-        } else if dragged {
-            buffer.set_style(rect, Style::default().bg(palette.surface1));
-        } else if workspace.focused {
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
-        }
         render_workspace_rows(
             buffer,
             rect,
@@ -329,8 +306,6 @@ pub(crate) fn render_sidebar(
             entry,
             rows,
             workspace.focused,
-            selected,
-            state.selected_workspace_id.is_some(),
             dragged,
             palette,
         );
@@ -341,6 +316,12 @@ pub(crate) fn render_sidebar(
             entry.index,
             state.collapsed_groups,
             palette,
+        );
+        paint_row(
+            buffer,
+            rect,
+            workspace_tone(selected, dragged, workspace.focused),
+            &materials,
         );
         hits.workspaces.push(WorkspaceHit {
             rect,
@@ -361,10 +342,10 @@ pub(crate) fn render_sidebar(
         super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
     }
 
-    if let Some(row) = state.workspace_drop_indicator_row.filter(|row| {
-        *row >= workspace_area.y.saturating_add(1)
-            && *row < workspace_area.bottom().saturating_sub(1)
-    }) {
+    if let Some(row) = state
+        .workspace_drop_indicator_row
+        .filter(|row| *row >= body.y.saturating_sub(1) && *row < body.bottom())
+    {
         put_text(
             buffer,
             body.x,
@@ -375,84 +356,46 @@ pub(crate) fn render_sidebar(
         );
     }
 
-    let footer_y = workspace_area.bottom().saturating_sub(1);
     if config.mouse_capture {
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            5.min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
-        put_text(
+        frame.render_footer(
             buffer,
-            workspace_area.x,
-            footer_y,
-            workspace_area.width,
-            " new",
-            Style::default().fg(palette.overlay0),
+            FooterActions {
+                sessions: false,
+                attention: super::super::global_menu::global_menu_attention(snapshot),
+            },
+            palette,
+            hits,
         );
-        let attention = super::super::global_menu::global_menu_attention(snapshot);
-        let launcher_width = if attention { 8 } else { 6 }.min(workspace_area.width);
-        hits.global_launcher = Rect::new(
-            workspace_area.right().saturating_sub(launcher_width),
-            footer_y,
-            launcher_width,
-            1,
-        );
-        if attention {
-            let start_x = workspace_area.right().saturating_sub(6);
-            put_text(
-                buffer,
-                start_x,
-                footer_y,
-                2,
-                "● ",
-                Style::default()
-                    .fg(palette.accent)
-                    .add_modifier(Modifier::BOLD),
-            );
-            put_text(
-                buffer,
-                start_x.saturating_add(2),
-                footer_y,
-                4,
-                "menu",
-                Style::default().fg(palette.overlay0),
-            );
-        } else {
-            put_right_text(
-                buffer,
-                workspace_area,
-                footer_y,
-                "menu",
-                Style::default().fg(palette.overlay0),
-            );
-        }
     }
 
     super::render_agent_panel(
         buffer,
-        detail_area,
+        &frame,
+        &materials,
         snapshot,
         config,
         state.agent_scroll,
         hits,
     );
 
-    hits.sidebar_toggle = Rect::new(
-        area.right().saturating_sub(2),
-        area.bottom().saturating_sub(1),
-        u16::from(area.width > 1),
-        u16::from(area.height > 0),
-    );
-    put_text(
-        buffer,
-        hits.sidebar_toggle.x,
-        hits.sidebar_toggle.y,
-        hits.sidebar_toggle.width,
-        "«",
-        Style::default().fg(palette.overlay0),
-    );
+    hits.sidebar_toggle = frame.render_toggle(buffer, palette);
+}
+
+/// Selection wins over drag feedback, which wins over the focused space.
+pub(in crate::client::shell) fn workspace_tone(
+    selected: bool,
+    dragged: bool,
+    focused: bool,
+) -> RowTone {
+    if selected {
+        RowTone::Selected
+    } else if dragged {
+        RowTone::Dragged
+    } else if focused {
+        RowTone::Focused
+    } else {
+        RowTone::Plain
+    }
 }
 
 pub(crate) fn workspace_entries(
@@ -697,8 +640,6 @@ pub(in crate::client::shell) fn render_workspace_rows(
     entry: &WorkspaceEntry,
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
     focused: bool,
-    selected: bool,
-    navigating: bool,
     dragged: bool,
     palette: &Palette,
 ) {
@@ -767,22 +708,5 @@ pub(in crate::client::shell) fn render_workspace_rows(
             Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
             buffer,
         );
-    }
-
-    let background = if selected {
-        Some(workspace_selection_background(palette))
-    } else if dragged {
-        Some(palette.surface1)
-    } else if focused {
-        Some(workspace_active_background(palette, navigating))
-    } else {
-        None
-    };
-    if let Some(background) = background {
-        for y in area.y..area.bottom() {
-            for x in area.x..area.right() {
-                buffer[(x, y)].set_bg(background);
-            }
-        }
     }
 }

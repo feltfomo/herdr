@@ -26,6 +26,73 @@ fn toast_index(delivery: crate::config::ToastDelivery) -> usize {
     }
 }
 
+/// One on/off-style sidebar control. The sidebar section flattens these into a single
+/// choice list, two rows per control, so it keeps the up/down/enter and click-to-apply
+/// behaviour of the single-list sections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SidebarSetting {
+    PanelBorders,
+    AgentDetail,
+    AgentPath,
+}
+
+impl SidebarSetting {
+    pub(super) const ALL: [Self; 3] = [Self::PanelBorders, Self::AgentDetail, Self::AgentPath];
+    pub(super) const CHOICES: usize = 2;
+
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Self::PanelBorders => "panel borders",
+            Self::AgentDetail => "agent rows",
+            Self::AgentPath => "agent path",
+        }
+    }
+
+    pub(super) fn hint(self) -> &'static str {
+        match self {
+            Self::PanelBorders => "labelled frame around each sidebar panel",
+            Self::AgentDetail => "detailed adds a line with path, model and role",
+            Self::AgentPath => "directory when it differs from the space root",
+        }
+    }
+
+    pub(super) fn labels(self) -> [&'static str; Self::CHOICES] {
+        match self {
+            Self::PanelBorders => ["on", "off"],
+            Self::AgentDetail => ["compact", "detailed"],
+            Self::AgentPath => ["shown", "hidden"],
+        }
+    }
+
+    pub(super) fn current(self, config: &ClientShellConfig) -> usize {
+        match self {
+            Self::PanelBorders => usize::from(!config.panel_borders),
+            Self::AgentDetail => {
+                usize::from(config.agent_detail == crate::config::AgentDetailConfig::Detailed)
+            }
+            Self::AgentPath => usize::from(!config.show_agent_path),
+        }
+    }
+
+    fn edit(self, choice: usize) -> crate::config::ConfigEdit<'static> {
+        match self {
+            Self::PanelBorders => crate::config::ConfigEdit::SidebarPanelBorders(choice == 0),
+            Self::AgentDetail => crate::config::ConfigEdit::SidebarAgentDetail(if choice == 0 {
+                crate::config::AgentDetailConfig::Compact
+            } else {
+                crate::config::AgentDetailConfig::Detailed
+            }),
+            Self::AgentPath => crate::config::ConfigEdit::SidebarShowAgentPath(choice == 0),
+        }
+    }
+
+    pub(super) fn from_index(index: usize) -> Option<(Self, usize)> {
+        Self::ALL
+            .get(index / Self::CHOICES)
+            .map(|setting| (*setting, index % Self::CHOICES))
+    }
+}
+
 pub(super) fn integration_needs_install(info: &crate::api::schema::IntegrationInfo) -> bool {
     info.state == crate::api::schema::IntegrationState::Outdated
         || info.available && info.state == crate::api::schema::IntegrationState::NotInstalled
@@ -51,6 +118,7 @@ impl ClientShellState {
             ClientSettingsSection::Indicators => indicator_index(self.config.status_indicators),
             ClientSettingsSection::Sound => usize::from(!self.config.sound_enabled),
             ClientSettingsSection::Toast => toast_index(self.config.toast_delivery),
+            ClientSettingsSection::Sidebar => SidebarSetting::PanelBorders.current(&self.config),
             ClientSettingsSection::Integrations => 0,
         }
     }
@@ -99,6 +167,9 @@ impl ClientShellState {
                 ClientSettingsSection::Theme => crate::config::THEME_NAMES.len(),
                 ClientSettingsSection::Indicators | ClientSettingsSection::Sound => 2,
                 ClientSettingsSection::Toast => 4,
+                ClientSettingsSection::Sidebar => {
+                    SidebarSetting::ALL.len() * SidebarSetting::CHOICES
+                }
                 ClientSettingsSection::Integrations => settings.integrations.len(),
             },
             _ => 0,
@@ -221,6 +292,12 @@ impl ClientShellState {
                     crate::config::ConfigEdit::ToastDelivery(delivery),
                     outcome,
                 );
+            }
+            ClientSettingsSection::Sidebar => {
+                let Some((setting, choice)) = SidebarSetting::from_index(selected) else {
+                    return;
+                };
+                self.save_settings_edit(setting.edit(choice), outcome);
             }
             ClientSettingsSection::Integrations => self.install_recommended_integrations(outcome),
         }

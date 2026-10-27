@@ -44,7 +44,8 @@ pub(super) fn render_collapsed(
 
 pub(super) fn render_expanded(
     buffer: &mut Buffer,
-    area: Rect,
+    frame: &super::sidebar_frame::SidebarFrame,
+    materials: &crate::ui::Materials,
     agent_view_label: Option<&str>,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
@@ -52,26 +53,27 @@ pub(super) fn render_expanded(
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
-    if !super::agent_sidebar::render_agent_panel_header(
+    super::agent_sidebar::render_agent_panel_header(
         buffer,
-        area,
+        frame,
+        materials,
         agent_view_label,
         config,
         hits,
-    ) {
-        return;
-    }
+    );
     let rows = agent_rows(endpoints, active_endpoint_id, config);
+    let gaps = super::agent_sidebar::uniform_gaps(rows.len(), config.agents.row_gap);
     super::agent_sidebar::render_agent_list(
         buffer,
-        area,
+        frame.agent_body,
         &rows,
+        &gaps,
         agent_view_label.map(|_| " no matching agents"),
         config,
         agent_scroll,
         hits,
         |row| row.agent.rows.len() + usize::from(row.group_header.is_some()),
-        |buffer, rect, row, hits| {
+        |buffer, rect, _, row, hits| {
             let mut rect = rect;
             if let Some(header) = &row.group_header {
                 put_text(
@@ -87,7 +89,7 @@ pub(super) fn render_expanded(
                 rect.y = rect.y.saturating_add(1);
                 rect.height = rect.height.saturating_sub(1);
             }
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, materials);
             if row.stale {
                 buffer.set_style(
                     rect,
@@ -112,6 +114,10 @@ impl ClientShellState {
         if body_height == 0 {
             return;
         }
+        if self.fleet.is_some() {
+            self.reveal_fleet_agent(endpoint_id, pane_id, body_height);
+            return;
+        }
         let rows = agent_rows(&self.endpoints, &self.active_endpoint_id, &self.config);
         let Some(target) = rows
             .iter()
@@ -127,10 +133,7 @@ impl ClientShellState {
                     .min(u16::MAX as usize) as u16
             })
             .collect::<Vec<_>>();
-        let mut gaps = vec![self.config.agents.row_gap; rows.len()];
-        if let Some(last) = gaps.last_mut() {
-            *last = 0;
-        }
+        let gaps = super::agent_sidebar::uniform_gaps(rows.len(), self.config.agents.row_gap);
         self.agent_scroll = super::scroll::list_scroll_start_to_reveal(
             &heights,
             &gaps,

@@ -792,13 +792,20 @@ fn output_len(output: &SharedOutput) -> usize {
 }
 
 fn sidebar_row_click(screen: &str, label: &str) -> Vec<u8> {
-    let sidebar_width = screen
-        .lines()
-        .find_map(|line| {
-            line.chars()
-                .position(|character| character == '│')
-                .filter(|column| *column > 0)
-        })
+    // The sidebar's right edge is the vertical rule present on the most rows. Bordered
+    // sidebars also draw one at column 0, and notice boxes draw short ones of their own.
+    let mut rules = std::collections::BTreeMap::<usize, usize>::new();
+    for line in screen.lines() {
+        for (column, character) in line.chars().enumerate() {
+            if column > 0 && character == '│' {
+                *rules.entry(column).or_default() += 1;
+            }
+        }
+    }
+    let sidebar_width = rules
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+        .map(|(column, _)| *column)
         .expect("visible sidebar boundary");
     let row = screen
         .lines()

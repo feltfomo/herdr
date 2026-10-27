@@ -13,6 +13,9 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) endpoint_id: ClientEndpointId,
     pub(crate) label: String,
     pub(super) fleet_label: Option<String>,
+    /// The fleet machine hosting this endpoint. Fleet endpoints are labelled by session,
+    /// which is the same for every machine in a combined window.
+    pub(super) machine_label: Option<String>,
     pub(crate) status: ClientEndpointStatus,
     pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
     /// Connection generation that produced `snapshot`. `None` is reserved for local tests.
@@ -55,6 +58,10 @@ pub(super) enum AgentVisibility {
 }
 
 impl ClientShellEndpoint {
+    pub(super) fn machine_label(&self) -> &str {
+        self.machine_label.as_deref().unwrap_or(&self.label)
+    }
+
     pub(super) fn agent_visible(&self, agent: &crate::protocol::ClientShellAgent) -> bool {
         match &self.agent_visibility {
             AgentVisibility::All => true,
@@ -98,6 +105,7 @@ impl ClientShellState {
                 });
                 endpoint.label = session.name.clone();
                 endpoint.fleet_label = Some(fleet.label(&session.endpoint));
+                endpoint.machine_label = Some(machine.label.clone());
                 if !session.running && !session.endpoint.is_local() {
                     endpoint.status = ClientEndpointStatus::Disabled;
                 }
@@ -184,6 +192,7 @@ impl ClientShellState {
                 endpoint_id,
                 label: profile.label.clone(),
                 fleet_label: None,
+                machine_label: None,
                 status: previous.map_or(
                     if profile.enabled {
                         ClientEndpointStatus::Connecting
@@ -855,6 +864,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
         label: "Local".into(),
         fleet_label: None,
+        machine_label: None,
         status: ClientEndpointStatus::Online,
         snapshot: None,
         snapshot_generation: None,

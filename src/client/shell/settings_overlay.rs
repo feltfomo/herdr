@@ -37,8 +37,9 @@ pub(super) fn render_settings_overlay(
     buffer: &mut Buffer,
     settings: &ClientSettingsOverlay,
     integration_updates_available: bool,
-    palette: &Palette,
+    config: &ClientShellConfig,
 ) -> Option<OverlayRender> {
+    let palette = &config.palette;
     let integration_height = 14u16
         .saturating_add(settings.integrations.len().max(1) as u16)
         .saturating_add(settings.integration_messages.len().min(6) as u16);
@@ -194,6 +195,9 @@ pub(super) fn render_settings_overlay(
                 &mut choice_hits,
             );
         }
+        ClientSettingsSection::Sidebar => {
+            render_sidebar_section(buffer, content, config, settings.selected, &mut choice_hits);
+        }
         ClientSettingsSection::Integrations => {
             render_integrations(buffer, content, settings, palette);
         }
@@ -292,6 +296,95 @@ fn render_choice_section(
         let rect = Rect::new(area.x, y, area.width, 1);
         draw_choice(buffer, rect, choice, index == selected, false, palette);
         hits.push((rect, index));
+    }
+}
+
+fn render_sidebar_section(
+    buffer: &mut Buffer,
+    area: Rect,
+    config: &ClientShellConfig,
+    selected: usize,
+    hits: &mut Vec<(Rect, usize)>,
+) {
+    use super::super::settings::SidebarSetting;
+
+    let palette = &config.palette;
+    let title_style = Style::default()
+        .fg(palette.text)
+        .bg(palette.panel_bg)
+        .add_modifier(Modifier::BOLD);
+    let hint_style = Style::default().fg(palette.overlay1).bg(palette.panel_bg);
+    let group_height = 1 + SidebarSetting::CHOICES as u16;
+    let mut y = area.y;
+    for (group, setting) in SidebarSetting::ALL.iter().enumerate() {
+        if y >= area.bottom() {
+            return;
+        }
+        let title = setting.title();
+        put_text(buffer, area.x, y, area.width, title, title_style);
+        let hint_x = area
+            .x
+            .saturating_add(display_width(title))
+            .saturating_add(2);
+        put_text(
+            buffer,
+            hint_x,
+            y,
+            area.right().saturating_sub(hint_x),
+            setting.hint(),
+            hint_style,
+        );
+        let current = setting.current(config);
+        for (choice, label) in setting.labels().iter().enumerate() {
+            let row_y = y + 1 + choice as u16;
+            if row_y >= area.bottom() {
+                return;
+            }
+            let index = group * SidebarSetting::CHOICES + choice;
+            let rect = Rect::new(area.x, row_y, area.width, 1);
+            draw_choice(
+                buffer,
+                rect,
+                label,
+                index == selected,
+                choice == current,
+                palette,
+            );
+            hits.push((rect, index));
+        }
+        y = y.saturating_add(group_height);
+    }
+
+    // Roles are an ordered list; the overlay shows it so the picker's grouping is
+    // discoverable, but reordering belongs in config.toml rather than a list editor here.
+    let roles_y = y.saturating_add(1);
+    if roles_y >= area.bottom() {
+        return;
+    }
+    put_text(buffer, area.x, roles_y, area.width, "roles", title_style);
+    let roles = if config.roles.is_empty() {
+        "none".to_owned()
+    } else {
+        config.roles.join(" → ")
+    };
+    let roles_x = area.x.saturating_add(display_width("roles") + 2);
+    put_text(
+        buffer,
+        roles_x,
+        roles_y,
+        area.right().saturating_sub(roles_x),
+        &roles,
+        Style::default().fg(palette.subtext0).bg(palette.panel_bg),
+    );
+    if roles_y + 1 < area.bottom() {
+        put_text(
+            buffer,
+            area.x,
+            roles_y + 1,
+            area.width,
+            "edit the order with roles = [...] under [ui.sidebar] in config.toml",
+            hint_style,
+        );
     }
 }
 

@@ -71,6 +71,12 @@
           "description": "Override the accent color token on top of the base theme. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
+          "key": "theme.custom.on_accent",
+          "type": "color",
+          "default": "unset",
+          "description": "Text color drawn on accent fills, such as the selected sidebar row. Unset derives a readable dark or light shade of the accent. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
           "key": "theme.custom.panel_bg",
           "type": "color",
           "default": "unset",
@@ -185,6 +191,12 @@
           "description": "Override the accent color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
+          "key": "theme.custom.light.on_accent",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the on_accent color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
           "key": "theme.custom.light.panel_bg",
           "type": "color",
           "default": "unset",
@@ -297,6 +309,12 @@
           "type": "color",
           "default": "unset",
           "description": "Override the accent color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.on_accent",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the on_accent color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
           "key": "theme.custom.dark.panel_bg",
@@ -546,6 +564,18 @@
           "type": "keybinding",
           "default": "\"prefix+g\"",
           "description": "Open the session navigator."
+        },
+        {
+          "key": "keys.role_picker",
+          "type": "keybinding",
+          "default": "\"prefix+a\"",
+          "description": "Open the agent picker grouped by the agents' role metadata."
+        },
+        {
+          "key": "keys.session_picker",
+          "type": "keybinding",
+          "default": "\"prefix+shift+s\"",
+          "description": "Open the session picker in a combined window. Does nothing in ordinary windows."
         },
         {
           "key": "keys.navigate_workspace_up",
@@ -1059,6 +1089,34 @@
             "dots",
             "symbols"
           ]
+        },
+        {
+          "key": "ui.sidebar.panel_borders",
+          "type": "boolean",
+          "default": "true",
+          "description": "Draw labelled borders around the sidebar panels. Also available in Settings under sidebar."
+        },
+        {
+          "key": "ui.sidebar.agent_detail",
+          "type": "enum",
+          "default": "\"detailed\"",
+          "description": "Agent entries in machine-grouped sidebars. \"compact\" shows one line per agent; \"detailed\" adds a line with the directory, $model, and $role. Also available in Settings under sidebar.",
+          "values": [
+            "compact",
+            "detailed"
+          ]
+        },
+        {
+          "key": "ui.sidebar.show_agent_path",
+          "type": "boolean",
+          "default": "true",
+          "description": "Show an agent's directory when it differs from its space root. Also available in Settings under sidebar."
+        },
+        {
+          "key": "ui.sidebar.roles",
+          "type": "list of strings",
+          "default": "[\"orchestrator\", \"architect\", \"implementer\"]",
+          "description": "Role groups in the agent role picker, in display order. Agents reporting another $role value get a group after these; agents with none are listed as unassigned."
         },
         {
           "key": "ui.sidebar.agents.row_gap",

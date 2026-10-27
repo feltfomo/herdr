@@ -1504,6 +1504,38 @@ mod tests {
     }
 
     #[test]
+    fn on_accent_overrides_reach_the_palette_per_appearance() {
+        let config: Config = toml::from_str(
+            r##"
+[theme]
+name = "catppuccin"
+auto_switch = true
+
+[theme.custom]
+on_accent = "#010203"
+
+[theme.custom.dark]
+on_accent = "#040506"
+"##,
+        )
+        .unwrap();
+        let runtime = client_theme_runtime_from_config(&config);
+
+        let light =
+            client_palette_for_appearance(&runtime, crate::terminal_theme::HostAppearance::Light);
+        let dark =
+            client_palette_for_appearance(&runtime, crate::terminal_theme::HostAppearance::Dark);
+
+        assert_eq!(light.on_accent, Some(ratatui::style::Color::Rgb(1, 2, 3)));
+        assert_eq!(light.accent_ink(), ratatui::style::Color::Rgb(1, 2, 3));
+        assert_eq!(dark.on_accent, Some(ratatui::style::Color::Rgb(4, 5, 6)));
+        assert_eq!(
+            client_palette_from_config(&Config::default()).on_accent,
+            None
+        );
+    }
+
+    #[test]
     fn theme_auto_switch_layers_active_mode_overrides_last() {
         let mut config = Config::default();
         config.theme.name = Some("gruvbox".to_string());

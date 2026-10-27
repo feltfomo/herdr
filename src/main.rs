@@ -91,6 +91,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # selection_bg = "#313244"
 # panel_bg = "reset"
 # accent = "#f5c2e7"
+# Text on accent fills such as the selected sidebar row. Unset derives a readable
+# shade of the accent; [theme.custom.light] and [theme.custom.dark] accept it too.
+# on_accent = "#11111b"
 # red = "#ff6188"
 # green = "#a6e3a1"
 
@@ -151,6 +154,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_notification_target = "prefix+o"
 # workspace_picker = "prefix+w"
 # goto = "prefix+g"
+# role_picker = "prefix+a"
+# session_picker = "prefix+shift+s" # combined windows only
 # new_workspace = "prefix+shift+n"
 # new_worktree = "prefix+shift+g"
 # open_worktree = ""    # optional, unset by default
@@ -343,6 +348,18 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Accent color for highlights, borders, and navigation UI.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
 # accent = "cyan"
+
+# Sidebar presentation. The settings overlay (sidebar section) writes the first three.
+# [ui.sidebar]
+# Labelled borders around the sidebar panels.
+# panel_borders = true
+# Agent entries: "compact" is one line; "detailed" adds a line with the directory,
+# $model, and $role.
+# agent_detail = "detailed"
+# Show an agent's directory when it differs from its space root.
+# show_agent_path = true
+# Role groups in the role picker, in order. Other reported $role values follow these.
+# roles = ["orchestrator", "architect", "implementer"]
 
 # Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
 # pane, agent, terminal_title, and terminal_title_stripped.

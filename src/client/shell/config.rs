@@ -125,6 +125,10 @@ impl ClientShellConfig {
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             spaces: config.ui.sidebar.spaces.clone(),
             agents: config.ui.sidebar.agents.clone(),
+            panel_borders: config.ui.sidebar.panel_borders,
+            agent_detail: config.ui.sidebar.agent_detail,
+            show_agent_path: config.ui.sidebar.show_agent_path,
+            roles: config.ui.sidebar.roles.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
@@ -370,6 +374,10 @@ impl ClientShellConfig {
                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;
                 self.spaces = ui.sidebar.spaces.clone();
                 self.agents = ui.sidebar.agents.clone();
+                self.panel_borders = ui.sidebar.panel_borders;
+                self.agent_detail = ui.sidebar.agent_detail;
+                self.show_agent_path = ui.sidebar.show_agent_path;
+                self.roles = ui.sidebar.roles.clone();
                 self.agent_panel_sort = ui.agent_panel_sort;
                 self.status_indicators = ui.status_indicators;
                 self.sound_enabled = ui.sound.enabled;

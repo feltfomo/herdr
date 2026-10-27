@@ -1,5 +1,6 @@
 use super::*;
 
+mod picker_overlays;
 mod settings_overlay;
 mod worktree_overlays;
 
@@ -15,6 +16,8 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(crate) navigator_scrollbar: Rect,
     pub(crate) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
+    pub(crate) session_popup: Rect,
+    pub(crate) session_rows: Vec<(Rect, String)>,
     pub(crate) worktree_search: Rect,
     pub(crate) worktree_rows: Vec<(Rect, usize)>,
     pub(crate) help_popup: Rect,
@@ -39,12 +42,15 @@ pub(crate) fn render_client_overlay(
     s: &ClientShellSnapshot,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    k: &LiveKeybindConfig,
-    p: &Palette,
+    fleet: Option<&crate::client::fleet::State>,
+    config: &ClientShellConfig,
 ) -> Option<OverlayRender> {
+    let k = &config.keybinds;
+    let p = &config.palette;
     if !matches!(
         o,
         ClientShellOverlay::Navigator(_)
+            | ClientShellOverlay::SessionPicker(_)
             | ClientShellOverlay::ContextMenu(_)
             | ClientShellOverlay::GlobalMenu(_)
     ) {
@@ -61,14 +67,20 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::ReleaseNotes(v) => {
             render_release_notes_overlay(b, v, &s.update_install_command, p)
         }
-        ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, endpoints, p),
+        ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, endpoints, fleet, p),
         ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
         ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
+        ClientShellOverlay::Navigator(v) if matches!(v.mode, ClientNavigatorMode::Roles { .. }) => {
+            picker_overlays::render_role_picker(b, v, endpoints, active_endpoint_id, fleet, p)
+        }
         ClientShellOverlay::Navigator(v) => {
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
         }
+        ClientShellOverlay::SessionPicker(v) => {
+            picker_overlays::render_session_picker(b, v, fleet?, p)
+        }
         ClientShellOverlay::Settings(v) => {
-            settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, p)
+            settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, config)
         }
         ClientShellOverlay::WorktreeCreate(v) => {
             worktree_overlays::render_worktree_create_overlay(b, v, p)
@@ -645,6 +657,7 @@ fn render_rename_overlay(
     b: &mut Buffer,
     v: &ClientRenameOverlay,
     endpoints: &[ClientShellEndpoint],
+    fleet: Option<&crate::client::fleet::State>,
     p: &Palette,
 ) -> Option<OverlayRender> {
     let q = popup(b.area, 56, 7)?;
@@ -675,6 +688,32 @@ fn render_rename_overlay(
                 Style::default().fg(p.overlay0).bg(p.panel_bg),
             );
         }
+    }
+    if let (ClientRenameTarget::NewSession { machine }, Some(fleet)) = (&v.target, fleet) {
+        let label = fleet
+            .config
+            .machines
+            .iter()
+            .find(|candidate| &candidate.id == machine)
+            .map_or(machine.as_str(), |candidate| candidate.label.as_str());
+        let error = (!v.input.trim().is_empty())
+            .then(|| {
+                crate::client::fleet::launch::validate_new_session(fleet, machine, v.input.trim())
+                    .err()
+            })
+            .flatten();
+        let (detail, color) = match error {
+            Some(error) => (format!("on {label} · {error}"), p.red),
+            None => (format!("on {label} · tab switches machine"), p.overlay0),
+        };
+        put_text(
+            b,
+            i.x,
+            i.y + 1,
+            i.width,
+            &detail,
+            Style::default().fg(color).bg(p.panel_bg),
+        );
     }
     let input = Rect::new(i.x, i.y + 2, i.width, 1);
     b.set_style(input, Style::default().fg(p.text).bg(p.surface0));

@@ -518,7 +518,7 @@ impl ClientShellState {
         }
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
-            || point.1 >= self.hits.new_workspace.y
+            || point.1 >= self.hits.workspace_body.bottom()
             || self.hits.workspaces.iter().any(|hit| {
                 hit.endpoint_id != self.active_endpoint_id && super::contains(hit.rect, point)
             })
@@ -580,7 +580,7 @@ impl ClientShellState {
                     .map(|workspace| workspace.workspace_id.clone())
             });
             let row = last_hit.rect.bottom();
-            if row < self.hits.new_workspace.y {
+            if row < self.hits.workspace_body.bottom() {
                 slots.push((before, row));
             }
         }
@@ -1549,7 +1549,8 @@ impl ClientShellState {
                         Some(ClientShellOverlay::Settings(ClientSettingsOverlay {
                             section: ClientSettingsSection::Indicators
                                 | ClientSettingsSection::Sound
-                                | ClientSettingsSection::Toast,
+                                | ClientSettingsSection::Toast
+                                | ClientSettingsSection::Sidebar,
                             ..
                         }))
                     );
@@ -1646,6 +1647,10 @@ impl ClientShellState {
                 }
                 _ => {}
             }
+            return;
+        }
+        if matches!(self.overlay, Some(ClientShellOverlay::SessionPicker(_))) {
+            self.handle_session_picker_mouse(mouse, outcome);
             return;
         }
         if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
@@ -2039,6 +2044,17 @@ impl ClientShellState {
                     }
                     return;
                 }
+                let agent_machine = self
+                    .hits
+                    .fleet_agent_machines
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, machine)| machine.clone());
+                if let Some(machine) = agent_machine {
+                    self.toggle_fleet_agent_machine(&machine);
+                    outcome.repaint = true;
+                    return;
+                }
                 if super::contains(self.hits.agent_sort_toggle, point) {
                     let sort = match self.config.agent_panel_sort {
                         crate::config::AgentPanelSortConfig::Spaces => {
@@ -2060,6 +2076,11 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.global_launcher, point) {
                     self.toggle_global_menu();
+                    outcome.repaint = true;
+                    return;
+                }
+                if super::contains(self.hits.session_picker, point) {
+                    self.open_session_picker();
                     outcome.repaint = true;
                     return;
                 }
