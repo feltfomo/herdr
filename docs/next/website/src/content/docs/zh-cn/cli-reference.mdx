@@ -24,6 +24,7 @@ herdr --version               # 打印版本
 可选的启动和更新设置：
 
 - 需要命名会话而非默认会话时，添加 `--session <name>`。
+- 配置了 `[fleet]` 机器时，添加 `--fleet <machine>` 可在合并窗口中打开该机器上正在运行的会话，添加 `--new` 可先在该机器上创建会话。参见[多机器合并窗口](/zh-cn/docs/configuration/)。
 - 远程连接要使用服务器按键绑定而非本地绑定时，添加 `--remote-keybindings server`。
 - 实验性实时交接需要在 `herdr --remote` 或 `herdr update` 中明确添加 `--handoff`，不是正常设置或连接流程；参见[更新](/zh-cn/docs/install/)。
 

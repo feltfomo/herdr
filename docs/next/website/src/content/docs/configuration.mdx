@@ -121,6 +121,25 @@ manage_ssh_config = true
 
 When enabled, `herdr --remote` writes a private temporary SSH config that includes your user and system SSH configs first, then adds fallback `ServerAliveInterval` and `ServerAliveCountMax` values. Your own keepalive settings win. Linux and macOS clients also use a private per-attach OpenSSH control socket to reuse the first authenticated connection; Windows OpenSSH does not. Set `manage_ssh_config = false` to run remote attach through plain `ssh` without Herdr's generated config or control socket.
 
+## Combined machine windows
+
+List the machines whose sessions one window should combine. Share the same list on every machine: each machine finds itself by the first label of its host name and connects to itself over local IPC, so its own `target` is ignored. Other machines are reached over SSH with your existing keys.
+
+```toml
+[[fleet.machines]]
+id = "khion"
+target = "me@khion"
+
+[[fleet.machines]]
+id = "lumi"
+label = "laptop"
+target = "me@lumi"
+```
+
+With this machine listed, `herdr` and `herdr --session <name>` open a combined window for that session: the sidebar shows each machine's spaces from the same-named session, and the session picker switches sessions across machines. `herdr --fleet lumi --session work` opens `work` on `lumi` and needs it to be running there; Herdr never starts a stopped remote session. Add `--new` to create it on that machine first; `default` cannot be created that way. Each window keeps its sidebar preferences in its own directory under `$XDG_STATE_HOME/herdr/connections`.
+
+Ids use 1-64 ASCII letters, digits, `.`, `_` or `-` and must be unique; at most 8 machines are supported, and `label` defaults to the id. An invalid list is reported as a config diagnostic and Herdr opens ordinary windows. Without `[fleet]`, on a machine that is not listed, or with `HERDR_SOCKET_PATH` or `HERDR_CLIENT_SOCKET_PATH` set, launches behave as before.
+
 ## Keybindings
 
 For a guided introduction to the prefix and a vetted prefix-free setup, see [Keyboard](/docs/keyboard/).

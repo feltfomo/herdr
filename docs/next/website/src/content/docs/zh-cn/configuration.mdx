@@ -121,6 +121,25 @@ manage_ssh_config = true
 
 启用后，`herdr --remote` 会写入一份私有的临时 SSH 配置：先包含用户和系统 SSH 配置，再添加兜底的 `ServerAliveInterval` 和 `ServerAliveCountMax` 值。你自己的保活设置优先。Linux 和 macOS 客户端还会为每次远程连接使用私有的 OpenSSH control socket，以复用首次通过身份验证的连接；Windows OpenSSH 不使用此复用方式。设置 `manage_ssh_config = false` 可通过普通 `ssh` 进行远程连接，不使用 Herdr 生成的配置或 control socket。
 
+## 多机器合并窗口
+
+列出需要在同一个窗口中合并会话的机器。请在每台机器上共享同一份列表：每台机器通过主机名的第一段找到自己，并通过本地 IPC 连接自己，因此它自己的 `target` 会被忽略。其他机器使用你现有的密钥通过 SSH 连接。
+
+```toml
+[[fleet.machines]]
+id = "khion"
+target = "me@khion"
+
+[[fleet.machines]]
+id = "lumi"
+label = "laptop"
+target = "me@lumi"
+```
+
+当本机在列表中时，`herdr` 和 `herdr --session <name>` 会为该会话打开合并窗口：侧边栏显示每台机器上同名会话的空间，会话选择器可以跨机器切换会话。`herdr --fleet lumi --session work` 会打开 `lumi` 上的 `work`，该会话必须已在运行；Herdr 不会启动已停止的远程会话。添加 `--new` 可先在该机器上创建会话；`default` 不能通过这种方式创建。每个窗口的侧边栏偏好保存在 `$XDG_STATE_HOME/herdr/connections` 下各自的目录中。
+
+ID 使用 1-64 个 ASCII 字母、数字、`.`、`_` 或 `-`，且不能重复；最多支持 8 台机器，`label` 默认为 ID。无效的列表会作为配置诊断报告，Herdr 将打开普通窗口。没有 `[fleet]`、本机不在列表中，或设置了 `HERDR_SOCKET_PATH` 或 `HERDR_CLIENT_SOCKET_PATH` 时，启动行为与以前相同。
+
 ## 按键绑定
 
 有关前缀键的引导式介绍和经过验证的免前缀配置，请参阅[键盘](/docs/keyboard/)。

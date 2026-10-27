@@ -7,6 +7,7 @@ use super::{model::LoadedConfig, Config, CLIENT_STATE_DIR_ENV_VAR, CONFIG_PATH_E
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
     "experimental",
+    "fleet",
     "keys",
     "onboarding",
     "remote",
@@ -382,6 +383,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.remote = section,
+    );
+    load_live_section(
+        table,
+        "fleet",
+        "fleet config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.fleet = section,
     );
 
     diagnostics.extend(config.theme.diagnostics());

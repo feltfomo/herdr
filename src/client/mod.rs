@@ -181,6 +181,10 @@ enum ClientExit {
     Launch(fleet::launch::LaunchRequest),
 }
 
+pub(crate) use fleet::startup::{
+    extract_args as extract_fleet_args, open_configured_window as open_fleet_window,
+};
+
 pub(crate) fn validate_fleet_configuration() -> io::Result<()> {
     fleet::Config::load().map(|_| ()).map_err(io::Error::other)
 }

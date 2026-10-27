@@ -14,8 +14,11 @@ use tokio::io::AsyncReadExt;
 use super::endpoint::{ClientEndpointId, ProfileId, SavedSshEndpoint};
 
 pub(super) mod launch;
+pub(super) mod startup;
 
 pub(super) const CONFIG_ENV: &str = "HERDR_FLEET_CONFIG";
+// The fleet.json schema; older launchers write it directly, so it changes only with the file.
+const CONFIG_VERSION: u32 = 2;
 static NEXT_PREFERENCE_WRITE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 const MAX_BYTES: usize = 256 * 1024;
 const MAX_SESSIONS: usize = 64;
@@ -48,6 +51,36 @@ pub(super) struct Config {
 }
 
 impl Config {
+    /// The window configuration for `session` on `selected` from the `[fleet]` machines, with
+    /// `local` reached over local IPC whatever target the shared config declares for it.
+    pub fn from_settings(
+        settings: &crate::config::FleetConfig,
+        local: &str,
+        selected: &str,
+        session: &str,
+    ) -> Result<Self, String> {
+        let config = Self {
+            version: CONFIG_VERSION,
+            local_machine: local.to_owned(),
+            origin_session: session.to_owned(),
+            selected: Selection {
+                machine: selected.to_owned(),
+                session: session.to_owned(),
+            },
+            machines: settings
+                .machines
+                .iter()
+                .map(|machine| Machine {
+                    id: machine.id.clone(),
+                    label: machine.label().to_owned(),
+                    target: (machine.id != local).then(|| machine.target.clone()),
+                })
+                .collect(),
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
     pub fn load() -> Result<Option<Self>, String> {
         let Some(path) = std::env::var_os(CONFIG_ENV) else {
             return Ok(None);
@@ -79,7 +112,10 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != 2 || self.machines.is_empty() || self.machines.len() > 8 {
+        if self.version != CONFIG_VERSION
+            || self.machines.is_empty()
+            || self.machines.len() > crate::config::MAX_FLEET_MACHINES
+        {
             return Err("unsupported fleet version or machine count".into());
         }
         crate::session::validate_name(&self.origin_session)?;
@@ -90,22 +126,15 @@ impl Config {
         let mut ids = HashSet::new();
         let mut local = 0;
         for machine in &self.machines {
-            if machine.id.is_empty()
-                || machine.id.len() > 64
-                || !machine
-                    .id
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-                || !ids.insert(machine.id.as_str())
-                || machine.label.trim().is_empty()
-                || machine.label.len() > 128
-                || machine.label.chars().any(char::is_control)
-            {
-                return Err("invalid or duplicate fleet machine identity".into());
+            crate::config::validate_fleet_machine(
+                &machine.id,
+                &machine.label,
+                machine.target.as_deref(),
+            )?;
+            if !ids.insert(machine.id.as_str()) {
+                return Err("duplicate fleet machine identity".into());
             }
-            if let Some(target) = &machine.target {
-                SavedSshEndpoint::new(&machine.label, target, "default")?;
-            } else {
+            if machine.target.is_none() {
                 local += 1;
                 if machine.id != self.local_machine {
                     return Err("local transport belongs to the current machine only".into());

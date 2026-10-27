@@ -429,6 +429,20 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # force keepalive or multiplexing off, it only stops herdr from adding its own.
 # manage_ssh_config = true
 
+# Combined windows: machines whose sessions one window discovers and switches between.
+# When this machine's short host name matches an id, plain `herdr` opens a combined
+# window for the session; `herdr --fleet lumi --session work` opens that machine's
+# running session, and adding `--new` creates it there first. Each id may appear once,
+# at most 8 machines; the label defaults to the id. The local machine's target is
+# ignored because it always connects over local IPC.
+# [[fleet.machines]]
+# id = "khion"
+# target = "me@khion"
+# [[fleet.machines]]
+# id = "lumi"
+# label = "laptop"
+# target = "me@lumi"
+
 [experimental]
 # Allow launching herdr from inside a herdr-managed pane.
 # allow_nested = false
@@ -557,6 +571,19 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
+    let (args, fleet_launch) = match client::extract_fleet_args(&args) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("error: {err}");
+            eprintln!("run 'herdr --help' for usage");
+            std::process::exit(2);
+        }
+    };
+    if remote_launch.is_some() && fleet_launch.is_explicit() {
+        eprintln!("error: --fleet and --new cannot be combined with --remote");
+        eprintln!("run 'herdr --help' for usage");
+        std::process::exit(2);
+    }
 
     if remote_launch.is_some()
         && args.get(1).is_some()
@@ -722,6 +749,10 @@ fn main() -> io::Result<()> {
         println!("  --session <name>    Use or create a named persistent session");
         println!("  --machine <label-or-id>  Run an API command on a saved SSH machine");
         println!("  --remote <target>   Attach through SSH to a remote Herdr server");
+        println!(
+            "  --fleet <machine>   Open the session on a [fleet] machine in a combined window"
+        );
+        println!("  --new               With --fleet, create the named --session there first");
         println!("  --remote-keybindings <local|server>");
         println!("                      Keybindings for --remote app attach (default: local)");
         println!("  --handoff           Opt into live handoff for update or remote attach");
@@ -813,6 +844,13 @@ fn main() -> io::Result<()> {
 
     let loaded_config = config::Config::load();
     exit_if_nested_disabled(&loaded_config.config);
+
+    // Only the default launch reaches here, so servers, hidden clients and CLI commands never
+    // become combined windows.
+    if let Err(err) = client::open_fleet_window(&loaded_config.config.fleet, &fleet_launch) {
+        eprintln!("herdr: {err}");
+        std::process::exit(1);
+    }
 
     let saved_federation =
         client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());

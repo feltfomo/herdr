@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+mod fleet;
 mod io;
 mod keybinds;
 mod model;
@@ -11,6 +12,7 @@ mod window_title;
 mod write;
 
 pub use self::{
+    fleet::FleetConfig,
     io::{
         client_state_dir, config_diagnostic_summary, config_dir, config_path, load_live_config,
         remove_keybinding_config_sections, remove_section_key, state_dir, upsert_section_bool,
@@ -38,6 +40,7 @@ pub use self::{
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
+pub(crate) use self::fleet::{validate_machine as validate_fleet_machine, MAX_FLEET_MACHINES};
 pub(crate) use self::keybinds::parse_key_combo;
 pub(crate) use self::write::{update_file_at, write_edit, ConfigEdit};
 pub(crate) use self::{
@@ -124,6 +127,7 @@ impl Config {
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
             .chain(self.invalid_headless_size_diagnostic())
+            .chain(self.fleet.diagnostics())
             .collect()
     }
 

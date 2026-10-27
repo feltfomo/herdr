@@ -59,11 +59,12 @@ pub(in crate::client) fn open(fleet: &State, session: &str) -> Result<LaunchRequ
             ))
         }
     };
-    Ok(LaunchRequest {
-        config: window_config(&fleet.config, machine, session)?,
-        attach_only: machine == local && lists(local, true),
-        create_on: None,
-    })
+    attach(
+        &fleet.config,
+        machine,
+        session,
+        machine == local && lists(local, true),
+    )
 }
 
 /// The window that creates `session` on `machine` and opens it there.
@@ -73,18 +74,55 @@ pub(in crate::client) fn create(
     session: &str,
 ) -> Result<LaunchRequest, String> {
     validate_new_session(fleet, machine, session)?;
-    let target = fleet
-        .config
+    start(&fleet.config, machine, session)
+}
+
+/// The window on an existing `session` of `machine`, never creating it on a remote machine.
+/// `attach_only` adds `client` so a local session that stopped meanwhile fails instead of
+/// silently starting again.
+pub(in crate::client) fn attach(
+    base: &Config,
+    machine: &str,
+    session: &str,
+    attach_only: bool,
+) -> Result<LaunchRequest, String> {
+    Ok(LaunchRequest {
+        config: window_config(base, machine, session)?,
+        attach_only,
+        create_on: None,
+    })
+}
+
+/// The window that brings `session` up on `machine`: a local session starts with the window
+/// as an ordinary launch would, a remote one only through fleet-create.
+pub(in crate::client) fn start(
+    base: &Config,
+    machine: &str,
+    session: &str,
+) -> Result<LaunchRequest, String> {
+    let config = window_config(base, machine, session)?;
+    let create_on = config
         .machines
         .iter()
         .find(|m| m.id == machine)
         .and_then(|m| m.target.clone());
     Ok(LaunchRequest {
-        config: window_config(&fleet.config, machine, session)?,
-        // A local session starts with the window; a remote one only through fleet-create.
+        config,
         attach_only: false,
-        create_on: target,
+        create_on,
     })
+}
+
+/// The name rules `herdr machine fleet-create` enforces, shared by every way of creating a
+/// session so a bad name fails before anything is launched.
+pub(in crate::client) fn validate_new_session_name(session: &str) -> Result<(), String> {
+    if session == crate::session::DEFAULT_SESSION_NAME {
+        return Err("default is reserved".into());
+    }
+    if crate::session::validate_name(session).is_err() {
+        return Err("use 1-64 letters, digits, '.', '_' or '-'".into());
+    }
+    Ok(())
 }
 
 /// The rules `herdr machine fleet-create` and the fleet configuration enforce, checked before
@@ -94,12 +132,7 @@ pub(in crate::client) fn validate_new_session(
     machine: &str,
     session: &str,
 ) -> Result<(), String> {
-    if session == crate::session::DEFAULT_SESSION_NAME {
-        return Err("default is reserved".into());
-    }
-    if crate::session::validate_name(session).is_err() {
-        return Err("use 1-64 letters, digits, '.', '_' or '-'".into());
-    }
+    validate_new_session_name(session)?;
     let state = fleet
         .machines
         .iter()
@@ -144,7 +177,7 @@ fn state_root(xdg_state_home: Option<OsString>, home: Option<PathBuf>) -> Result
 
 /// The client state directory owning one (machine, session) window, so its sidebar collapse,
 /// agent scope and chrome preferences survive relaunches without leaking into other windows.
-fn connection_dir(state_root: &Path, config: &Config) -> PathBuf {
+pub(super) fn connection_dir(state_root: &Path, config: &Config) -> PathBuf {
     let selected = &config.selected;
     let identity = config
         .machines
@@ -189,8 +222,8 @@ impl LaunchRequest {
     }
 
     /// Creates the remote session if requested, writes the window's configuration and replaces
-    /// this process. Runs only after the terminal is restored so fleet-create reports to a
-    /// normal terminal.
+    /// this process. Callers run it while no client owns the terminal, so fleet-create reports
+    /// to a normal terminal.
     pub(in crate::client) fn run(self) -> io::Result<()> {
         let root = state_root(
             std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()),
@@ -209,13 +242,13 @@ impl LaunchRequest {
                 ])
                 .env_remove(CONFIG_ENV)
                 .env_remove(crate::config::CLIENT_STATE_DIR_ENV_VAR)
-                // fleet-create never prompts, and the finished client's stdin reader may still be
-                // blocked in read on the terminal until exec.
+                // fleet-create never prompts, and a finished picker client's stdin reader may still
+                // be blocked in read on the terminal until exec.
                 .stdin(std::process::Stdio::null())
                 .status()?;
             if !status.success() {
                 return Err(io::Error::other(format!(
-                    "session {} was not created on {target}; this window was closed",
+                    "session {} was not created on {target}; no window was opened",
                     self.config.origin_session
                 )));
             }
